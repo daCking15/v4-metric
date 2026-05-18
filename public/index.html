@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>ROP · Live</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230a0f1c'/%3E%3Ctext x='50%25' y='58%25' text-anchor='middle' font-family='monospace' font-weight='700' font-size='28' fill='%237aa2ff'%3ER%3C/text%3E%3C/svg%3E"
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <canvas id="bg"></canvas>
+
+    <main class="stage">
+      <!-- Top bar: weather (left) + ROP (center) + clock (right) -->
+      <header class="top">
+        <div class="weather">
+          <div id="wxIcon" class="wx-icon">·</div>
+          <div class="wx-text">
+            <div id="wxTemp" class="wx-temp">—°</div>
+            <div id="wxDesc" class="wx-desc">Denver weather…</div>
+          </div>
+        </div>
+        <div class="top-brand">
+          <div class="brand-main">ROP</div>
+          <div class="brand-sub">
+            <span id="marketStateDot" class="state-dot"></span>
+            <span id="marketState">Market Open</span>
+          </div>
+        </div>
+        <div class="clock">
+          <div class="clock-time">
+            <span id="time">--:--</span>
+            <span id="ampm" class="clock-ampm">--</span>
+          </div>
+          <div class="clock-meta">
+            <span id="date">--</span>
+            <span class="dot">·</span>
+            <span>Denver, CO</span>
+          </div>
+        </div>
+      </header>
+
+      <!-- Center: price, change, chart -->
+      <section class="hero">
+        <div id="price" class="price">—</div>
+        <div class="change-row">
+          <span id="changeArrow" class="arrow">·</span>
+          <span id="change" class="change">—</span>
+          <span id="changePct" class="change-pct">—</span>
+        </div>
+        <canvas id="spark" class="spark"></canvas>
+      </section>
+
+      <footer class="ticker">
+        <div class="ticker-tag">NEWS</div>
+        <div class="ticker-viewport">
+          <div class="ticker-track" id="tickerTrack"></div>
+        </div>
+      </footer>
+    </main>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
