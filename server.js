@@ -7,6 +7,18 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Live Server (:5500) and other local static hosts call the API on :3000.
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+    res.setHeader("Vary", "Origin");
+  }
+  if (req.method === "OPTIONS") return res.sendStatus(204);
+  next();
+});
+
 const UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
   "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
@@ -143,6 +155,77 @@ function tradingDayBoundsET() {
     close: Date.UTC(y, mo - 1, d, 16, 0) + offsetMs,
     offsetMs,
   };
+}
+
+function etParts(ms) {
+  return Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/New_York",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      weekday: "short",
+      hour12: false,
+    })
+      .formatToParts(new Date(ms))
+      .map((p) => [p.type, p.value]),
+  );
+}
+
+function etWallMs(y, mo, d, hour, minute, offsetMs) {
+  return Date.UTC(y, mo - 1, d, hour, minute) + offsetMs;
+}
+
+function previousTradingDayMs(fromMs) {
+  let t = fromMs - 86_400_000;
+  for (let i = 0; i < 5; i++) {
+    const wd = etParts(t).weekday;
+    if (wd !== "Sat" && wd !== "Sun") return t;
+    t -= 86_400_000;
+  }
+  return t;
+}
+
+function extractExtendedBridge(series, marketOpen, offsetMs) {
+  const prev = etParts(previousTradingDayMs(marketOpen));
+  const bridgeStart =
+    etWallMs(+prev.year, +prev.month, +prev.day, 16, 0, offsetMs) - 30 * 60_000;
+  const bridgeEnd = marketOpen;
+  return series
+    .filter((p) => p.t >= bridgeStart && p.t < bridgeEnd - 60_000)
+    .sort((a, b) => a.t - b.t);
+}
+
+async function attachExtendedSeries(snap) {
+  if (!Number.isFinite(snap?.previousClose)) return snap;
+  const { open, offsetMs } = tradingDayBoundsET();
+  // Nasdaq intraday chart already includes today's pre-market bars.
+  if (Array.isArray(snap.series) && snap.series.length) {
+    const fromNasdaq = extractExtendedBridge(snap.series, open, offsetMs);
+    if (fromNasdaq.length >= 2) {
+      snap.extendedSeries = fromNasdaq;
+      return snap;
+    }
+  }
+  try {
+    const r = await fetchYahooChart(snap.symbol, "5d", "5m");
+    if (!r.ok) return snap;
+    const data = await r.json();
+    const result = data?.chart?.result?.[0];
+    if (!result) return snap;
+    const ts = result.timestamp || [];
+    const closes = result.indicators?.quote?.[0]?.close || [];
+    const series = ts
+      .map((t, i) => ({ t: t * 1000, c: closes[i] }))
+      .filter((p) => Number.isFinite(p.c));
+    const bridge = extractExtendedBridge(series, open, offsetMs);
+    if (bridge.length >= 2) snap.extendedSeries = bridge;
+  } catch (e) {
+    console.warn(`Extended hours for ${snap.symbol}:`, e?.message || e);
+  }
+  return snap;
 }
 
 async function fetchNasdaq(symbol) {
@@ -358,7 +441,7 @@ async function refreshSymbol(symbol) {
     pushHistory(symbol, snap.regularMarketTime || Date.now(), snap.price);
   }
   snapshots.set(symbol, snap);
-  return snap;
+  return attachExtendedSeries(snap);
 }
 
 app.get("/api/quote", async (req, res) => {

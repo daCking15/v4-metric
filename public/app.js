@@ -393,6 +393,109 @@ function chartSeriesWithOpenAnchor(pts, marketOpen, openPrice) {
   return [head, ...pts];
 }
 
+/** Pre-market from intraday series when API omits extendedSeries (e.g. older worker). */
+function chartExtendedFromSeries(series, marketOpen) {
+  if (!Array.isArray(series)) return null;
+  const pts = series
+    .filter((p) => Number.isFinite(p.c) && p.t < marketOpen - 60_000)
+    .sort((a, b) => a.t - b.t);
+  return pts.length >= 2 ? pts : null;
+}
+
+function chartExtendedSource(series, marketOpen, quote) {
+  if (quote?.extendedSeries?.length >= 2) return quote.extendedSeries;
+  return chartExtendedFromSeries(series, marketOpen);
+}
+
+/** Map after-hours / pre-market into the narrow slot before today's open. */
+function chartCompressExtendedSeries(pts, targetStart, targetEnd, maxPts = 48) {
+  if (!pts?.length) return [];
+  const sorted = [...pts].sort((a, b) => a.t - b.t);
+  const t0 = sorted[0].t;
+  const t1 = sorted[sorted.length - 1].t;
+  const span = Math.max(1, t1 - t0);
+  return downsampleSeries(sorted, maxPts).map((p) => ({
+    t: targetStart + ((p.t - t0) / span) * (targetEnd - targetStart),
+    c: p.c,
+  }));
+}
+
+/** Prev-close anchor + condensed extended hours + regular session. */
+function chartMergePlotSeries(marketOpen, openPrice, prevClose, sessionPts, extendedPts) {
+  const slot = chartPrevCloseSlotTime(marketOpen);
+  const session = chartSeriesWithOpenAnchor(sessionPts, marketOpen, openPrice);
+  const bridge = [];
+  if (Number.isFinite(prevClose)) bridge.push({ t: slot, c: prevClose });
+  if (extendedPts?.length >= 2) {
+    const compressed = chartCompressExtendedSeries(extendedPts, slot, marketOpen);
+    const startIdx = compressed[0]?.t <= slot + 1000 ? 1 : 0;
+    for (let i = startIdx; i < compressed.length; i++) {
+      const p = compressed[i];
+      const last = bridge[bridge.length - 1];
+      if (last && Math.abs(p.c - last.c) < 0.001 && p.t - last.t < 120_000) continue;
+      bridge.push(p);
+    }
+  }
+  const sess = session.filter((p) => p.t >= marketOpen - 60_000);
+  if (!bridge.length) return sess;
+  const lastB = bridge[bridge.length - 1];
+  const firstS = sess[0];
+  if (
+    firstS &&
+    Math.abs(lastB.c - firstS.c) < 0.02 &&
+    lastB.t >= firstS.t - 120_000
+  ) {
+    return [...bridge.slice(0, -1), ...sess];
+  }
+  return [...bridge, ...sess];
+}
+
+function chartSessionSlice(plotted, marketOpen) {
+  const extended = [];
+  const session = [];
+  for (const p of plotted) {
+    if (p.t < marketOpen) extended.push(p);
+    else session.push(p);
+  }
+  return { extended, session };
+}
+
+/** White bridge through the OPEN price; session line starts after the handoff. */
+function chartBridgeStrokePoints(extPts, marketOpen, openPrice) {
+  if (!extPts.length || !Number.isFinite(openPrice)) return extPts;
+  const out = extPts.filter((p) => p.t < marketOpen);
+  const tail = { t: marketOpen, c: openPrice };
+  const last = out[out.length - 1];
+  if (last && marketOpen - last.t < 120_000) out.pop();
+  return [...out, tail];
+}
+
+function chartSessionStrokePoints(session, marketOpen, openPrice) {
+  const after = session.filter((p) => p.t > marketOpen + 30_000);
+  if (!Number.isFinite(openPrice)) return session;
+  if (!after.length) return session;
+  return [{ t: marketOpen, c: openPrice }, ...after];
+}
+
+function strokeChartBridge(ctx, pts, px, py) {
+  if (pts.length < 2) return;
+  ctx.save();
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.8)";
+  ctx.setLineDash([]);
+  ctx.lineWidth = 2.5;
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  pts.forEach((p, i) => {
+    const X = px(p.t);
+    const Y = py(p.c);
+    if (i === 0) ctx.moveTo(X, Y);
+    else ctx.lineTo(X, Y);
+  });
+  ctx.stroke();
+  ctx.restore();
+}
+
 function chartPrevCloseSlotTime(marketOpen) {
   return marketOpen - CHART_PREV_SLOT_MS;
 }
@@ -720,7 +823,7 @@ const diag = (() => {
       `Stock:   ${slots.quote}`,
       `Weather: ${slots.weather}`,
       `News:    ${slots.news}`,
-      `Build:   v50 · ${liteMode ? "lite" : "full"}${isDebugUrl() ? " · /debug" : ""} · API: ${API_BASE || "(same-origin)"}`,
+      `Build:   v57 · ${liteMode ? "lite" : "full"}${isDebugUrl() ? " · /debug" : ""} · API: ${API_BASE || "(same-origin)"}`,
     ];
     if (errors.length) {
       lines.push("");
@@ -1147,12 +1250,20 @@ function drawSparkLite(series, change, quote) {
   const xMin = chartTimeAxisMin(openTime, Number.isFinite(prevClose));
   const CHART_PAD = Math.max(56, Math.min(96, w * 0.06));
 
-  let pts = (series || [])
+  let sessionPts = (series || [])
     .filter((p) => Number.isFinite(p.c) && p.t >= openTime - 60_000 && p.t <= closeTime + 60_000)
     .sort((a, b) => a.t - b.t);
-  const openPriceEarly = Number.isFinite(quote?.open) ? quote.open : pts[0]?.c ?? null;
-  pts = chartSeriesWithOpenAnchor(pts, openTime, openPriceEarly);
-  const ptsFull = pts;
+  const openPriceEarly = Number.isFinite(quote?.open) ? quote.open : sessionPts[0]?.c ?? null;
+  const ptsFull = chartSeriesWithOpenAnchor(sessionPts, openTime, openPriceEarly);
+  const plotted = chartMergePlotSeries(
+    openTime,
+    openPriceEarly,
+    prevClose,
+    sessionPts,
+    quote?.extendedSeries,
+  );
+  let { extended: extPts, session: pts } = chartSessionSlice(plotted, openTime);
+  extPts = downsampleSeries(extPts, 28);
   pts = downsampleSeries(pts, 72);
 
   const openPrice = openPriceEarly;
@@ -1170,9 +1281,14 @@ function drawSparkLite(series, change, quote) {
       : openPrice;
   const currentPrice = ptsFull.at(-1)?.c ?? null;
 
-  const refs = [openPrice, prevClose, highPrice, lowPrice, ...ptsFull.map((p) => p.c)].filter(
-    Number.isFinite,
-  );
+  const refs = [
+    openPrice,
+    prevClose,
+    highPrice,
+    lowPrice,
+    ...ptsFull.map((p) => p.c),
+    ...extPts.map((p) => p.c),
+  ].filter(Number.isFinite);
   let yMin = Math.min(...refs);
   let yMax = Math.max(...refs);
   if (yMin === yMax) {
@@ -1202,12 +1318,19 @@ function drawSparkLite(series, change, quote) {
 
   strokeChartReferenceLine(ctx, prevClose, py, plotX0, plotX1);
 
-  if (pts.length >= 2) {
+  const bridgeStroke = chartBridgeStrokePoints(extPts, openTime, openPrice);
+  const sessionStroke = chartSessionStrokePoints(pts, openTime, openPrice);
+  if (bridgeStroke.length >= 2) strokeChartBridge(ctx, bridgeStroke, px, py);
+  if (sessionStroke.length >= 2) {
     ctx.lineWidth = 2;
     ctx.lineJoin = "round";
     ctx.lineCap = "round";
-    drawChartSeriesFill(ctx, pts, px, py, chartBottom, { up, gradient: false, refPrice: lineRef });
-    strokePlottedSeriesVsOpen(ctx, pts, px, py, lineRef);
+    drawChartSeriesFill(ctx, sessionStroke, px, py, chartBottom, {
+      up,
+      gradient: false,
+      refPrice: lineRef,
+    });
+    strokePlottedSeriesVsOpen(ctx, sessionStroke, px, py, lineRef);
   }
 
   const events = buildChartEvents({
@@ -1231,8 +1354,14 @@ function drawSparkLite(series, change, quote) {
   });
 
   ctx.font = EVENT_FONT;
+  const guidePts =
+    bridgeStroke.length >= 2
+      ? [...bridgeStroke, ...sessionStroke]
+      : sessionStroke.length
+        ? sessionStroke
+        : pts;
   drawChartEventGuidesAndLabels(ctx, placed, py, {
-    plottedPts: pts,
+    plottedPts: guidePts,
     ringRadius: 5,
     ringWidth: 2,
     labelsAbove: true,
@@ -1272,7 +1401,7 @@ function drawSpark(series, change, quote) {
   const xMax = marketClose;
   const xMin = chartTimeAxisMin(marketOpen, Number.isFinite(prevClose));
 
-  let pts = series
+  let sessionPts = series
     .filter(
       (p) =>
         Number.isFinite(p.c) &&
@@ -1283,9 +1412,23 @@ function drawSpark(series, change, quote) {
 
   const openPrice = Number.isFinite(quote?.open)
     ? quote.open
-    : pts[0]?.c ?? null;
-  pts = chartSeriesWithOpenAnchor(pts, marketOpen, openPrice);
-  if (pts.length === 0 && !Number.isFinite(openPrice) && !Number.isFinite(prevClose)) return;
+    : sessionPts[0]?.c ?? null;
+  const ptsFull = chartSeriesWithOpenAnchor(sessionPts, marketOpen, openPrice);
+  const plotted = chartMergePlotSeries(
+    marketOpen,
+    openPrice,
+    prevClose,
+    sessionPts,
+    chartExtendedSource(series, marketOpen, quote),
+  );
+  const { extended: extPts, session: pts } = chartSessionSlice(plotted, marketOpen);
+  if (
+    pts.length === 0 &&
+    extPts.length === 0 &&
+    !Number.isFinite(openPrice) &&
+    !Number.isFinite(prevClose)
+  )
+    return;
 
   const ys = pts.map((p) => p.c);
   const highPrice = Number.isFinite(quote?.dayHigh)
@@ -1300,7 +1443,14 @@ function drawSpark(series, change, quote) {
       : openPrice;
   const currentPrice = pts.at(-1)?.c ?? null;
 
-  const refs = [openPrice, prevClose, highPrice, lowPrice, ...ys].filter(Number.isFinite);
+  const refs = [
+    openPrice,
+    prevClose,
+    highPrice,
+    lowPrice,
+    ...ys,
+    ...extPts.map((p) => p.c),
+  ].filter(Number.isFinite);
   let yMin = Math.min(...refs);
   let yMax = Math.max(...refs);
   if (yMin === yMax) {
@@ -1359,20 +1509,28 @@ function drawSpark(series, change, quote) {
 
   strokeChartReferenceLine(ctx, prevClose, py, plotX0, plotX1);
 
+  const bridgeStroke = chartBridgeStrokePoints(extPts, marketOpen, openPrice);
+  const sessionStroke = chartSessionStrokePoints(pts, marketOpen, openPrice);
+  if (bridgeStroke.length >= 2) strokeChartBridge(ctx, bridgeStroke, px, py);
+
   // ---- Filled area + glowing line (green above prev close, red below)
-  if (pts.length >= 2) {
+  if (sessionStroke.length >= 2) {
     ctx.save();
     ctx.lineWidth = 2.5;
     ctx.lineJoin = "round";
     ctx.lineCap = "round";
-    drawChartSeriesFill(ctx, pts, px, py, chartBottom, { up, gradient: true, refPrice: lineRef });
-    strokePlottedSeriesVsOpen(ctx, pts, px, py, lineRef, { glow: true });
+    drawChartSeriesFill(ctx, sessionStroke, px, py, chartBottom, {
+      up,
+      gradient: true,
+      refPrice: lineRef,
+    });
+    strokePlottedSeriesVsOpen(ctx, sessionStroke, px, py, lineRef, { glow: true });
     ctx.restore();
   }
 
   // ---- Event markers (open / high / low) — labels above, guides down to the line.
   const events = buildChartEvents({
-    points: pts,
+    points: ptsFull,
     openTime: marketOpen,
     openPrice,
     prevClose,
@@ -1392,8 +1550,14 @@ function drawSpark(series, change, quote) {
   });
 
   ctx.font = EVENT_FONT;
+  const guidePts =
+    bridgeStroke.length >= 2
+      ? [...bridgeStroke, ...sessionStroke]
+      : sessionStroke.length
+        ? sessionStroke
+        : pts;
   drawChartEventGuidesAndLabels(ctx, placed, py, {
-    plottedPts: pts,
+    plottedPts: guidePts,
     ringRadius: 6,
     ringWidth: 2.2,
     glow: true,

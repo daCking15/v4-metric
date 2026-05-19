@@ -71,6 +71,101 @@ function tradingDayBoundsET() {
   };
 }
 
+function etParts(ms) {
+  return Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/New_York",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      weekday: "short",
+      hour12: false,
+    })
+      .formatToParts(new Date(ms))
+      .map((p) => [p.type, p.value]),
+  );
+}
+
+function etWallMs(y, mo, d, hour, minute, offsetMs) {
+  return Date.UTC(y, mo - 1, d, hour, minute) + offsetMs;
+}
+
+function previousTradingDayMs(fromMs) {
+  let t = fromMs - 86_400_000;
+  for (let i = 0; i < 5; i++) {
+    const wd = etParts(t).weekday;
+    if (wd !== "Sat" && wd !== "Sun") return t;
+    t -= 86_400_000;
+  }
+  return t;
+}
+
+/** After-hours + pre-market between prior session close and today's open. */
+function extractExtendedBridge(series, marketOpen, offsetMs) {
+  const prev = etParts(previousTradingDayMs(marketOpen));
+  const bridgeStart = etWallMs(+prev.year, +prev.month, +prev.day, 16, 0, offsetMs) - 30 * 60_000;
+  const bridgeEnd = marketOpen;
+  return series
+    .filter((p) => p.t >= bridgeStart && p.t < bridgeEnd - 60_000)
+    .sort((a, b) => a.t - b.t);
+}
+
+async function fetchYahooChartSeries(symbol, range, interval) {
+  const tryOnce = async () => {
+    const { cookie, crumb } = await getYahooSession();
+    const url =
+      `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}` +
+      `?range=${encodeURIComponent(range)}&interval=${encodeURIComponent(interval)}` +
+      `&includePrePost=true&events=div%2Csplit&crumb=${encodeURIComponent(crumb)}`;
+    return fetch(url, {
+      headers: {
+        "User-Agent": UA,
+        Accept: "application/json,text/plain,*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        Cookie: cookie,
+        Origin: "https://finance.yahoo.com",
+        Referer: `https://finance.yahoo.com/quote/${encodeURIComponent(symbol)}`,
+      },
+    });
+  };
+  let r = await tryOnce();
+  if (r.status === 401 || r.status === 403 || r.status === 429) {
+    yahooSession = null;
+    r = await tryOnce();
+  }
+  if (!r.ok) throw new Error(`Yahoo HTTP ${r.status}`);
+  const data = await r.json();
+  const result = data?.chart?.result?.[0];
+  if (!result) throw new Error("Yahoo: no result");
+  const ts = result.timestamp || [];
+  const closes = result.indicators?.quote?.[0]?.close || [];
+  return ts
+    .map((t, i) => ({ t: t * 1000, c: closes[i] }))
+    .filter((p) => Number.isFinite(p.c));
+}
+
+async function attachExtendedSeries(snap) {
+  if (!Number.isFinite(snap?.previousClose)) return snap;
+  const { open, offsetMs } = tradingDayBoundsET();
+  if (Array.isArray(snap.series) && snap.series.length) {
+    const fromNasdaq = extractExtendedBridge(snap.series, open, offsetMs);
+    if (fromNasdaq.length >= 2) {
+      snap.extendedSeries = fromNasdaq;
+      return snap;
+    }
+  }
+  try {
+    const series = await fetchYahooChartSeries(snap.symbol, "5d", "5m");
+    const bridge = extractExtendedBridge(series, open, offsetMs);
+    if (bridge.length >= 2) snap.extendedSeries = bridge;
+  } catch (e) {
+    console.warn(`Extended hours for ${snap.symbol}:`, e?.message || e);
+  }
+  return snap;
+}
+
 const parseDollars = (v) => {
   if (typeof v === "number") return v;
   if (typeof v !== "string") return NaN;
@@ -336,7 +431,7 @@ async function refreshSymbol(symbol) {
   } else {
     pushHistory(symbol, snap.regularMarketTime || Date.now(), snap.price);
   }
-  return snap;
+  return attachExtendedSeries(snap);
 }
 
 async function handleQuote(url) {
