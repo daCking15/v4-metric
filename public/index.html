@@ -14,7 +14,7 @@
       href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="./styles.css?v=67" />
+    <link rel="stylesheet" href="./styles.css?v=82" />
     <!-- Discourage TV/console browsers from caching aggressively. These hints
          are non-binding but most browsers honor them on first load. -->
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
@@ -102,11 +102,13 @@
 
       <!-- Center: price, change, chart -->
       <section class="hero">
-        <div id="price" class="price">—</div>
-        <div class="change-row">
-          <span id="changeArrow" class="arrow">·</span>
-          <span id="change" class="change">—</span>
-          <span id="changePct" class="change-pct">—</span>
+        <div class="hero-upper">
+          <div id="price" class="price">—</div>
+          <div class="change-row">
+            <span id="changeArrow" class="arrow">·</span>
+            <span id="change" class="change">—</span>
+            <span id="changePct" class="change-pct">—</span>
+          </div>
         </div>
         <div class="hero-chart-row">
           <span id="prevClose" class="prev-close">Previous close</span>
@@ -125,6 +127,6 @@
     <div id="diag" class="diag hidden"></div>
 
     <script src="./config.js?v=67"></script>
-    <script src="./app.js?v=77" defer></script>
+    <script src="./app.js?v=99" defer></script>
   </body>
 </html>

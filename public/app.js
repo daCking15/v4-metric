@@ -109,51 +109,143 @@ function downsampleSeries(points, max) {
   return out;
 }
 
-/** Vertical spacing between staggered label rows when labels overlap horizontally. */
-const CHART_LABEL_ROW_STEP = 32;
+/** Vertical spacing between staggered label rows (one per event marker). */
+const CHART_LABEL_ROW_STEP = 28;
+/** Max event labels stacked above the plot (PRIOR, OPEN, HIGH, LOW, CLOSE). */
+const CHART_EVENT_LABEL_ROWS = 6;
+/** Extra horizontal clearance before labels count as overlapping (stagger sooner). */
+const CHART_LABEL_OVERLAP_GAP = 48;
 /** Space between the vertical guide and the left edge of the label text. */
 const CHART_LABEL_PAD_LEFT = 8;
 /** Equal gap above/below label ink where guides are hidden. */
 const CHART_LABEL_MASK_PAD_Y = 5;
-/** Top band for OPEN / HIGH / LOW / CLOSE labels (above the plot). */
-const CHART_EVENT_BAND_H = 108;
 /** Gap between the plot top edge and the bottom of the nearest label row. */
-const CHART_LABEL_GAP_ABOVE_PLOT = 6;
+const CHART_LABEL_GAP_ABOVE_PLOT = 4;
 /** Minimum Y for label tops (keeps text off the canvas edge). */
 const CHART_LABEL_TOP_INSET = 8;
+/** Max / min share of canvas height for the stacked event-label band. */
+const CHART_EVENT_BAND_MAX_RATIO = 0.28;
+const CHART_EVENT_BAND_MIN_RATIO = 0.09;
+const CHART_PLOT_MIN_RATIO = 0.4;
 /** Horizontal inset so edge markers (OPEN ring, end dot) are not clipped. */
-const CHART_PLOT_INSET_X = 4;
+const CHART_PLOT_INSET_X = 26;
 /** Condensed pre-market / after-hours width on the time axis (must match). */
 const CHART_EXTENDED_SLOT_MS = 28 * 60_000;
 const CHART_PREV_SLOT_MS = CHART_EXTENDED_SLOT_MS;
 const CHART_POST_SLOT_MS = CHART_EXTENDED_SLOT_MS;
 /** Canvas margin when reserving space for time-axis labels. */
-const CHART_TIME_AXIS_MARGIN = 4;
+const CHART_TIME_AXIS_MARGIN = 14;
 /** After-hours window: 4:00 PM – 8:00 PM ET. */
 const CHART_AFTER_HOURS_MS = 4 * 60 * 60_000;
 /** Minimum width of the horizontal tick on event guide lines. */
 const CHART_GUIDE_CAP_W = 7;
 /** Gap between the horizontal tick end and the label text. */
 const CHART_GUIDE_CAP_TEXT_GAP = 10;
-/** Bottom band for hour tick marks + labels under the plot. */
-const CHART_TIME_AXIS_H = 52;
-const CHART_TIME_TICK_LEN = 14;
-const CHART_TIME_LABEL_GAP = 12;
+const CHART_TIME_TICK_LEN = 6;
+const CHART_TIME_LABEL_GAP = 5;
+const CHART_TIME_AXIS_FONT =
+  "500 15px 'Space Grotesk', system-ui, sans-serif";
 
-function chartPlotLayout(h, { lite = false } = {}) {
-  const eventBandH = lite ? 56 : CHART_EVENT_BAND_H;
+/** Ticks sit on the plot baseline; reserve former above-tick gap below labels. */
+function chartTimeAxisPadAbove() {
+  return 0;
+}
+
+function chartTimeAxisPadBelow(h) {
+  const belowLabels = Math.round(Math.min(28, Math.max(14, h * 0.026)));
+  const reclaimedAbove = Math.round(Math.min(18, Math.max(10, h * 0.016)));
+  return belowLabels + reclaimedAbove;
+}
+
+function chartMeasureTimeAxisBlock(
+  ctx,
+  font,
+  { timeTickLen = CHART_TIME_TICK_LEN, labelGap = CHART_TIME_LABEL_GAP } = {},
+) {
+  ctx.save();
+  ctx.font = font;
+  const m = ctx.measureText("12:00 PM");
+  const textH =
+    (m.actualBoundingBoxAscent ?? 12) + (m.actualBoundingBoxDescent ?? 4);
+  ctx.restore();
+  return { textH, blockH: timeTickLen + labelGap + textH, timeTickLen, labelGap };
+}
+
+function chartTimeAxisBandHeight(h, ctx, font, { lite = false } = {}) {
+  const tickLen = lite ? 5 : CHART_TIME_TICK_LEN;
+  const labelGap = lite ? 4 : CHART_TIME_LABEL_GAP;
+  const { blockH } = chartMeasureTimeAxisBlock(ctx, font, {
+    timeTickLen: tickLen,
+    labelGap,
+  });
+  const padAbove = chartTimeAxisPadAbove();
+  const padBelow = chartTimeAxisPadBelow(h);
+  return {
+    bandH: blockH + padAbove + padBelow,
+    padAbove,
+    padBelow,
+    blockH,
+    timeTickLen: tickLen,
+    labelGap,
+  };
+}
+
+function chartEventBandHeight(h, { lite = false, labelRows = 1 } = {}) {
+  if (lite) return Math.min(48, Math.max(36, Math.round(h * 0.13)));
+  const rows = Math.max(1, Math.min(labelRows, CHART_EVENT_LABEL_ROWS));
+  const needed =
+    CHART_LABEL_ROW_STEP * (rows - 1) +
+    CHART_LABEL_GAP_ABOVE_PLOT +
+    CHART_LABEL_TOP_INSET +
+    16;
+  const maxBand = Math.round(h * CHART_EVENT_BAND_MAX_RATIO);
+  const minBand = Math.max(
+    Math.round(h * CHART_EVENT_BAND_MIN_RATIO),
+    CHART_LABEL_ROW_STEP + CHART_LABEL_GAP_ABOVE_PLOT + CHART_LABEL_TOP_INSET + 12,
+  );
+  return Math.max(minBand, Math.min(maxBand, needed));
+}
+
+function chartPlotLayout(h, { lite = false, labelRows = 1, ctx, timeFont } = {}) {
+  let eventBandH = chartEventBandHeight(h, { lite, labelRows });
+  const axis =
+    ctx && timeFont
+      ? chartTimeAxisBandHeight(h, ctx, timeFont, { lite })
+      : {
+          bandH: 60,
+          padAbove: chartTimeAxisPadAbove(),
+          padBelow: chartTimeAxisPadBelow(h),
+          timeTickLen: CHART_TIME_TICK_LEN,
+          labelGap: CHART_TIME_LABEL_GAP,
+        };
+  const timeAxisH = axis.bandH;
+  const padAbove = axis.padAbove ?? axis.pad ?? chartTimeAxisPadAbove();
+  const padBelow = axis.padBelow ?? axis.pad ?? chartTimeAxisPadBelow(h);
+  const timeTickLen = axis.timeTickLen ?? CHART_TIME_TICK_LEN;
+  const timeLabelGap = axis.labelGap ?? CHART_TIME_LABEL_GAP;
+  const minPlotH = Math.round(h * CHART_PLOT_MIN_RATIO);
+  if (h - eventBandH - timeAxisH < minPlotH) {
+    eventBandH = Math.max(36, h - timeAxisH - minPlotH);
+  }
   const chartTop = eventBandH;
-  const plotH = Math.max(40, h - eventBandH - CHART_TIME_AXIS_H);
+  const plotH = Math.max(40, h - eventBandH - timeAxisH);
   const chartBottom = chartTop + plotH;
+  const timeTickY0 = chartBottom + padAbove;
+  const timeLabelY = timeTickY0 + timeTickLen + timeLabelGap;
   return {
     chartTop,
     plotH,
     chartBottom,
+    eventBandH,
+    padAbove,
+    padBelow,
+    timeTickY0,
+    timeLabelY,
+    timeTickLen,
+    timeLabelGap,
     // Bottom edge of row-0 label ink (labels sit just above the plot).
     labelBaseY: chartTop - CHART_LABEL_GAP_ABOVE_PLOT,
     labelMinY: CHART_LABEL_TOP_INSET,
-    timeTickLen: CHART_TIME_TICK_LEN,
-    hourLblY: chartBottom + CHART_TIME_TICK_LEN + CHART_TIME_LABEL_GAP,
   };
 }
 
@@ -754,8 +846,8 @@ function layoutChartEventLabels(ctx, events, options) {
     baseY,
     labelsAbove = true,
     rowStep = CHART_LABEL_ROW_STEP,
-    overlapGap = 12,
-    maxRows = 4,
+    overlapGap = CHART_LABEL_OVERLAP_GAP,
+    maxRows = CHART_EVENT_LABEL_ROWS,
     minLabelX = 0,
     maxLabelRight = Infinity,
     labelPadLeft = CHART_LABEL_PAD_LEFT,
@@ -768,8 +860,16 @@ function layoutChartEventLabels(ctx, events, options) {
   const capLen = CHART_GUIDE_CAP_W;
   const textGap = CHART_GUIDE_CAP_TEXT_GAP;
 
+  const chartEventStackOrder = (ev) => {
+    if (ev.atRefPrice) return 0;
+    if (ev.isOpen) return 1;
+    if (ev.label?.startsWith("HIGH")) return 2;
+    if (ev.label?.startsWith("LOW")) return 3;
+    if (ev.label?.startsWith("CLOSE")) return 4;
+    return 5;
+  };
+
   const placed = [...events]
-    .sort((a, b) => px(a.t) - px(b.t))
     .map((ev) => {
       const guideX = px(ev.t);
       const { width: tw, inkAscent, inkHeight } = measureLabelInk(ctx, ev.label);
@@ -803,32 +903,53 @@ function layoutChartEventLabels(ctx, events, options) {
         maskBottom: 0,
         lineEndY: 0,
       };
-    });
+    })
+    .sort(
+      (a, b) =>
+        chartEventStackOrder(a.ev) - chartEventStackOrder(b.ev) || a.guideX - b.guideX,
+    );
 
+  const labelsOverlapX = (a, b) =>
+    a.left - overlapGap < b.right && a.right + overlapGap > b.left;
+
+  // Row 0 unless this label overlaps an earlier one — then sit below it.
   for (let i = 0; i < placed.length; i++) {
-    for (let row = 0; row < maxRows; row++) {
-      let fits = true;
+    if (placed[i].ev.atRefPrice) {
+      placed[i].row = 0;
+      continue;
+    }
+    let row = 0;
+    for (let j = 0; j < i; j++) {
+      if (!labelsOverlapX(placed[i], placed[j])) continue;
+      row = Math.max(row, placed[j].row + 1);
+    }
+    placed[i].row = Math.min(row, maxRows - 1);
+  }
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (let i = 1; i < placed.length; i++) {
       for (let j = 0; j < i; j++) {
-        if (placed[j].row !== row) continue;
-        if (
-          placed[i].left - overlapGap < placed[j].right &&
-          placed[i].right + overlapGap > placed[j].left
-        ) {
-          fits = false;
-          break;
+        if (!labelsOverlapX(placed[i], placed[j])) continue;
+        if (placed[i].row <= placed[j].row) {
+          const next = Math.min(placed[j].row + 1, maxRows - 1);
+          if (placed[i].row < next) {
+            placed[i].row = next;
+            changed = true;
+          }
         }
       }
-      if (fits) {
-        placed[i].row = row;
-        break;
-      }
-      if (row === maxRows - 1) placed[i].row = row;
     }
   }
 
+  const maxUsedRow = placed.reduce((m, p) => Math.max(m, p.row), 0);
+
   const applyLabelRow = (p) => {
     if (labelsAbove) {
-      p.lblY = Math.max(labelMinY, baseY - p.inkHeight - p.row * rowStep);
+      // Row 0 = top of stack (PRIOR CLOSE); higher rows sit lower toward the plot.
+      p.lblY = baseY - p.inkHeight - (maxUsedRow - p.row) * rowStep;
+      if (p.lblY < labelMinY) p.lblY = labelMinY;
     } else {
       p.lblY = baseY + p.row * rowStep;
     }
@@ -839,17 +960,6 @@ function layoutChartEventLabels(ctx, events, options) {
   };
 
   for (const p of placed) applyLabelRow(p);
-
-  // CLOSE sits left of OPEN; when rows stagger, keep CLOSE above OPEN.
-  const closeLbl = placed.find((p) => p.ev.atRefPrice);
-  const openLbl = placed.find((p) => p.ev.isOpen);
-  if (closeLbl && openLbl && closeLbl.row < openLbl.row) {
-    const r = closeLbl.row;
-    closeLbl.row = openLbl.row;
-    openLbl.row = r;
-    applyLabelRow(closeLbl);
-    applyLabelRow(openLbl);
-  }
 
   ctx.restore();
   return placed;
@@ -1078,7 +1188,7 @@ const diag = (() => {
       `Stock:   ${slots.quote}`,
       `Weather: ${slots.weather}`,
       `News:    ${slots.news}`,
-      `Build:   v77 · ${liteMode ? "lite" : "full"}${isDebugUrl() ? " · /debug" : ""} · API: ${API_BASE || "(same-origin)"}`,
+      `Build:   v93 · ${liteMode ? "lite" : "full"}${isDebugUrl() ? " · /debug" : ""} · API: ${API_BASE || "(same-origin)"}`,
     ];
     if (errors.length) {
       lines.push("");
@@ -1589,8 +1699,7 @@ function chartPlotInsetsFromTimeTicks(ctx, font, ticks, w, xMin, xMax) {
     ticks.map((t) => ({
       t: t.t,
       label: t.label,
-      centered: !t.edge,
-      edge: t.edge,
+      centered: true,
     })),
     w,
     xMin,
@@ -1599,25 +1708,14 @@ function chartPlotInsetsFromTimeTicks(ctx, font, ticks, w, xMin, xMax) {
   );
 }
 
-function chartTimeAxisLabelY(ctx, font, h, chartBottom, timeTickLen, labelGap) {
-  ctx.save();
-  ctx.font = font;
-  const m = ctx.measureText("8:88 AM");
-  const textH =
-    (m.actualBoundingBoxAscent ?? 12) + (m.actualBoundingBoxDescent ?? 4);
-  ctx.restore();
-  const preferred = chartBottom + timeTickLen + labelGap;
-  return Math.min(preferred, Math.max(chartBottom + timeTickLen + 2, h - 6 - textH));
-}
-
 function drawChartTimeAxis(ctx, opts) {
   const {
     w,
-    h,
     chartTop,
     chartBottom,
+    timeTickY0,
+    timeLabelY,
     timeTickLen,
-    labelGap,
     font,
     ticks,
     xMin,
@@ -1627,14 +1725,16 @@ function drawChartTimeAxis(ctx, opts) {
   } = opts;
   const plotW = Math.max(1, plotX1 - plotX0);
   const px = (t) => plotX0 + ((t - xMin) / Math.max(1, xMax - xMin)) * plotW;
-  const labelY = chartTimeAxisLabelY(ctx, font, h, chartBottom, timeTickLen, labelGap);
+  const tickY0 = timeTickY0 ?? chartBottom;
+  const labelY = timeLabelY ?? tickY0 + timeTickLen + CHART_TIME_LABEL_GAP;
+  const clipW = w ?? plotX1;
 
   ctx.save();
   ctx.font = font;
   ctx.textBaseline = "top";
   for (const tick of ticks) {
     const X = px(tick.t);
-    if (X < -8 || X > w + 8) continue;
+    if (X < -8 || X > clipW + 8) continue;
     ctx.strokeStyle = "rgba(255,255,255,0.04)";
     ctx.lineWidth = 1;
     ctx.beginPath();
@@ -1643,11 +1743,10 @@ function drawChartTimeAxis(ctx, opts) {
     ctx.stroke();
     ctx.strokeStyle = "rgba(255,255,255,0.18)";
     ctx.beginPath();
-    ctx.moveTo(X, chartBottom);
-    ctx.lineTo(X, chartBottom + timeTickLen);
+    ctx.moveTo(X, tickY0);
+    ctx.lineTo(X, tickY0 + timeTickLen);
     ctx.stroke();
-    ctx.textAlign =
-      tick.edge === "start" ? "left" : tick.edge === "end" ? "right" : "center";
+    ctx.textAlign = "center";
     ctx.fillStyle = "rgba(160, 180, 210, 0.55)";
     ctx.fillText(tick.label, X, labelY);
   }
@@ -1676,9 +1775,6 @@ function drawSparkLite(series, change, quote) {
   ctx.clearRect(0, 0, w, h);
 
   const EVENT_FONT = "600 16px 'Space Grotesk', system-ui, sans-serif";
-  const { chartTop, plotH, chartBottom, labelBaseY, labelMinY, hourLblY } = chartPlotLayout(h, {
-    lite: true,
-  });
   const { open: openTime, close: closeTime } = tradingDayBounds();
   const prevClose = Number.isFinite(quote?.previousClose) ? quote.previousClose : null;
   const sessionCloseEarly = chartSessionClosePrice(series, openTime, closeTime);
@@ -1773,6 +1869,12 @@ function drawSparkLite(series, change, quote) {
     highPrice,
     lowPrice,
     currentPrice,
+  });
+  const { chartTop, plotH, chartBottom, labelBaseY, labelMinY } = chartPlotLayout(h, {
+    lite: true,
+    labelRows: events.length,
+    ctx,
+    timeFont: CHART_TIME_AXIS_FONT,
   });
   const { insetL, insetR } = chartMergedHorizontalInsets(ctx, w, xMin, xMax, [
     {
@@ -1872,16 +1974,14 @@ function drawSpark(series, change, quote) {
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
   const w = cvs.clientWidth;
   const h = cvs.clientHeight;
+  if (w < 2 || h < 2) return;
   cvs.width = w * dpr;
   cvs.height = h * dpr;
   ctx.scale(dpr, dpr);
   ctx.clearRect(0, 0, w, h);
 
-  // OPEN/HIGH/LOW above the plot; hour labels tight under the plot bottom.
   const EVENT_FONT = "600 18px 'Space Grotesk', system-ui, sans-serif";
   const HOUR_FONT = "500 15px 'Space Grotesk', system-ui, sans-serif";
-  const { chartTop, plotH, chartBottom, labelBaseY, labelMinY, timeTickLen } =
-    chartPlotLayout(h);
 
   // X axis: prior date slot + NYSE 9:30–16:00 ET (Denver hour labels).
   const { open: marketOpen, close: marketClose } = tradingDayBounds();
@@ -1983,6 +2083,20 @@ function drawSpark(series, change, quote) {
     lowPrice,
     currentPrice,
   });
+  const {
+    chartTop,
+    plotH,
+    chartBottom,
+    labelBaseY,
+    labelMinY,
+    timeTickLen,
+    timeTickY0,
+    timeLabelY,
+  } = chartPlotLayout(h, {
+    labelRows: events.length,
+    ctx,
+    timeFont: HOUR_FONT,
+  });
   const timeTicks = chartDenverHourTicks(marketOpen, marketClose, {
     showPrevDate: Number.isFinite(prevClose),
     showAfterHoursSlot: showAfterHours,
@@ -2007,11 +2121,11 @@ function drawSpark(series, change, quote) {
 
   drawChartTimeAxis(ctx, {
     w,
-    h,
     chartTop,
     chartBottom,
+    timeTickY0,
+    timeLabelY,
     timeTickLen,
-    labelGap: CHART_TIME_LABEL_GAP,
     font: HOUR_FONT,
     ticks: timeTicks,
     xMin,

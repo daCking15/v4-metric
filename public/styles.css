@@ -26,6 +26,14 @@
   --ticker-bar-h: clamp(48px, 5vmin, 72px);
   --ticker-total-h: var(--ticker-bar-h);
 
+  /* Hero quote — large but capped; scales with viewport and quote band height. */
+  --hero-price-size: clamp(3.75rem, min(11.5vh, 12.2vmin, 11.5vw), 13rem);
+  --hero-change-size: clamp(1.9rem, min(5.1vh, 5.3vmin, 4.9vw), 4.5rem);
+  --hero-quote-pad-y: clamp(14px, 2.5vh, 44px);
+  --hero-quote-gap: clamp(8px, 1.1vh, 16px);
+  /* Breathing room between chart canvas bottom and the fixed news ticker. */
+  --hero-gap-chart-footer: clamp(18px, 3vh, 48px);
+
   /* Settings tab: how much peeks out from the left edge when idle. */
   --settings-peek: 10px;
   --settings-btn-size: clamp(44px, 4.5vmin, 52px);
@@ -87,7 +95,7 @@ body.idle .settings-dock * {
   padding: var(--safe-pad);
   /* Reserve space for the fixed news ticker (bar + TV bottom safe area). */
   padding-bottom: var(--ticker-total-h);
-  gap: clamp(16px, 2.5vh, 40px);
+  gap: clamp(8px, 1.2vh, 20px);
   overflow: hidden;
   box-sizing: border-box;
 }
@@ -169,17 +177,47 @@ body.idle .settings-dock * {
 
 /* ---------- Hero / price ---------- */
 .hero {
-  align-self: center;
+  align-self: stretch;
+  justify-self: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  text-align: center;
+  position: relative;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
+  padding-top: 0;
+  padding-bottom: var(--hero-gap-chart-footer);
+  overflow: hidden;
+}
+
+/* Price block centered in the band between the top bar and the chart. */
+.hero-upper {
+  flex: 1.35 1 0;
+  min-height: 0;
+  width: 100%;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  text-align: center;
-  position: relative;
-  min-height: 0;
-  min-width: 0;
-  width: 100%;
-  overflow: visible;
+  padding-block: var(--hero-quote-pad-y);
+  gap: var(--hero-quote-gap);
+  box-sizing: border-box;
+  container-type: size;
+  container-name: hero-quote;
+}
+
+@supports (font-size: 1cqh) {
+  .hero-upper .price {
+    font-size: clamp(3.75rem, min(11.5vh, 60cqh, 12.2vmin, 11.5vw), 13rem);
+  }
+
+  .hero-upper .change-row {
+    font-size: clamp(1.9rem, min(5.1vh, 24cqh, 5.3vmin, 4.9vw), 4.5rem);
+  }
 }
 
 
@@ -513,10 +551,11 @@ html.lite .ticker-track {
 }
 
 .price {
+  flex: 0 0 auto;
   font-family: "Space Grotesk", system-ui, sans-serif;
   font-weight: 500;
-  font-size: clamp(96px, 14vw, 220px);
-  line-height: 1;
+  font-size: var(--hero-price-size);
+  line-height: 0.95;
   letter-spacing: -0.04em;
   margin-top: 0;
   font-variant-numeric: tabular-nums;
@@ -553,11 +592,13 @@ html.lite .ticker-track {
 }
 
 .change-row {
-  margin-top: clamp(10px, 1.2vw, 18px);
+  flex: 0 0 auto;
+  margin-top: 0;
+  margin-bottom: 0;
   display: inline-flex;
   align-items: baseline;
-  gap: 18px;
-  font-size: clamp(28px, 3vw, 52px);
+  gap: clamp(10px, 1.2vw, 16px);
+  font-size: var(--hero-change-size);
   font-weight: 500;
   font-variant-numeric: tabular-nums;
 }
@@ -577,15 +618,18 @@ html.lite .ticker-track {
 }
 
 .hero-chart-row {
+  flex: 2.2 1 0;
   display: flex;
-  align-items: center;
+  align-items: stretch;
   justify-content: center;
   gap: clamp(14px, 2.2vw, 28px);
   width: 100%;
-  max-width: min(100%, 1680px);
-  margin-top: clamp(16px, 2vh, 36px);
+  max-width: min(100%, 1580px);
+  padding-inline: clamp(14px, 2.5vw, 40px);
+  margin-top: 0;
+  min-height: 0;
   min-width: 0;
-  overflow: visible;
+  overflow: hidden;
 }
 
 .prev-close {
@@ -602,10 +646,12 @@ html.lite .ticker-track {
 
 .spark {
   flex: 1 1 auto;
-  width: 0;
+  width: 100%;
   min-width: 0;
   max-width: 1600px;
-  height: clamp(200px, min(32vh, 36vmin), 480px);
+  height: 100%;
+  min-height: clamp(140px, 22vh, 220px);
+  max-height: none;
   display: block;
 }
 
