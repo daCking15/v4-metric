@@ -1,9 +1,11 @@
 <!doctype html>
 <html lang="en">
   <head>
+    <base href="../" />
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>ROP · Live</title>
+    <title>ROP · Live (debug)</title>
+    <script>window.APP_BOOT = { debugRoute: true };</script>
     <link
       rel="icon"
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230a0f1c'/%3E%3Ctext x='50%25' y='58%25' text-anchor='middle' font-family='monospace' font-weight='700' font-size='28' fill='%237aa2ff'%3ER%3C/text%3E%3C/svg%3E"
@@ -14,7 +16,7 @@
       href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="./styles.css?v=9" />
+    <link rel="stylesheet" href="styles.css?v=9" />
     <!-- Discourage TV/console browsers from caching aggressively. These hints
          are non-binding but most browsers honor them on first load. -->
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
@@ -106,7 +108,7 @@
 
     <div id="diag" class="diag hidden"></div>
 
-    <script src="./config.js?v=9"></script>
-    <script src="./app.js?v=9" defer></script>
+    <script src="config.js?v=9"></script>
+    <script src="app.js?v=9" defer></script>
   </body>
 </html>

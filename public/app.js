@@ -8,17 +8,25 @@ const API_BASE = (
 ).replace(/\/$/, "");
 const api = (path) => `${API_BASE}${path}`;
 
-// ---------- Performance / lite mode (auto on Xbox & TV browsers) ----------
+// ---------- Performance / lite mode ----------
 const LITE_STORAGE_KEY = "rop-screensaver:liteMode";
 
-function detectConsoleBrowser() {
-  const ua = navigator.userAgent || "";
-  return /Xbox|XBOX|PlayStation|Nintendo|SmartTV|SMART-TV|HbbTV|Web0S|WebOS|Tizen|CrKey|AppleTV|AFTB|AFTM/i.test(
-    ua,
-  );
+/** True when opened via /debug (see public/debug/index.html) or ?debug=1 */
+function isDebugUrl() {
+  if (typeof window !== "undefined" && window.APP_BOOT?.debugRoute) return true;
+  try {
+    if (new URLSearchParams(location.search).get("debug") === "1") return true;
+  } catch {
+    /* ignore */
+  }
+  const path = (location.pathname || "")
+    .replace(/\/index\.html$/i, "")
+    .replace(/\/+$/, "");
+  return path === "/debug" || path.endsWith("/debug");
 }
 
 function loadLiteMode() {
+  if (isDebugUrl()) return true;
   try {
     const v = localStorage.getItem(LITE_STORAGE_KEY);
     if (v === "1") return true;
@@ -26,7 +34,7 @@ function loadLiteMode() {
   } catch {
     /* ignore */
   }
-  return detectConsoleBrowser();
+  return false;
 }
 
 function saveLiteMode(on) {
@@ -108,11 +116,15 @@ function downsampleSeries(points, max) {
 const DEBUG_STORAGE_KEY = "rop-screensaver:debugPanel";
 
 function loadDebugEnabled() {
+  if (isDebugUrl()) return true;
   try {
-    return localStorage.getItem(DEBUG_STORAGE_KEY) === "1";
+    const v = localStorage.getItem(DEBUG_STORAGE_KEY);
+    if (v === "1") return true;
+    if (v === "0") return false;
   } catch {
-    return false;
+    /* ignore */
   }
+  return false;
 }
 
 function saveDebugEnabled(on) {
@@ -144,7 +156,7 @@ const diag = (() => {
       `Stock:   ${slots.quote}`,
       `Weather: ${slots.weather}`,
       `News:    ${slots.news}`,
-      `Build:   v7 · ${liteMode ? "lite" : "full"} · API: ${API_BASE || "(same-origin)"}`,
+      `Build:   v9 · ${liteMode ? "lite" : "full"}${isDebugUrl() ? " · /debug" : ""} · API: ${API_BASE || "(same-origin)"}`,
     ];
     if (errors.length) {
       lines.push("");
