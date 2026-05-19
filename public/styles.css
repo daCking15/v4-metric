@@ -179,7 +179,7 @@ body.idle .settings-dock * {
   min-height: 0;
   min-width: 0;
   width: 100%;
-  overflow: hidden;
+  overflow: visible;
 }
 
 
@@ -585,6 +585,7 @@ html.lite .ticker-track {
   max-width: min(100%, 1680px);
   margin-top: clamp(16px, 2vh, 36px);
   min-width: 0;
+  overflow: visible;
 }
 
 .prev-close {

@@ -1,4 +1,5 @@
 import express from "express";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -188,6 +189,197 @@ function previousTradingDayMs(fromMs) {
   return t;
 }
 
+function etDayKey(ms) {
+  const p = etParts(ms);
+  return `${p.year}-${p.month}-${p.day}`;
+}
+
+/** Last completed NYSE session close from Yahoo daily bars (Nasdaq prev close can lag). */
+function previousCloseFromYahooDaily(result) {
+  const { open: marketOpen } = tradingDayBoundsET();
+  const todayKey = etDayKey(marketOpen);
+  const ts = result.timestamp || [];
+  const closes = result.indicators?.quote?.[0]?.close || [];
+  let bestKey = "";
+  let bestClose = NaN;
+  for (let i = 0; i < ts.length; i++) {
+    const c = closes[i];
+    if (!Number.isFinite(c)) continue;
+    const key = etDayKey(ts[i] * 1000);
+    if (key >= todayKey) continue;
+    if (key > bestKey) {
+      bestKey = key;
+      bestClose = c;
+    }
+  }
+  if (Number.isFinite(bestClose)) return bestClose;
+  const meta = result.meta || {};
+  const metaPrev = meta.chartPreviousClose ?? meta.previousClose;
+  return Number.isFinite(metaPrev) ? metaPrev : NaN;
+}
+
+const priorCloseCache = new Map();
+const yahooDailyInflight = new Map();
+const PRIOR_CLOSE_CACHE_FILE = path.join(__dirname, ".prior-close-cache.json");
+
+function loadPriorCloseDiskCache() {
+  try {
+    const raw = fs.readFileSync(PRIOR_CLOSE_CACHE_FILE, "utf8");
+    const data = JSON.parse(raw);
+    for (const [sym, entry] of Object.entries(data)) {
+      if (entry && Number.isFinite(entry.price)) priorCloseCache.set(sym, entry);
+    }
+  } catch {
+    /* no cache file yet */
+  }
+}
+
+function savePriorCloseDiskCache() {
+  try {
+    fs.writeFileSync(
+      PRIOR_CLOSE_CACHE_FILE,
+      JSON.stringify(Object.fromEntries(priorCloseCache), null, 2),
+    );
+  } catch (e) {
+    console.warn("Could not save prior close cache:", e?.message || e);
+  }
+}
+
+function priorSessionDayKey() {
+  const { open } = tradingDayBoundsET();
+  return etDayKey(previousTradingDayMs(open));
+}
+
+function getCachedPreviousClose(symbol) {
+  const hit = priorCloseCache.get(symbol.toUpperCase());
+  if (!hit || hit.dayKey !== priorSessionDayKey()) return null;
+  return hit.price;
+}
+
+function setCachedPreviousClose(symbol, price) {
+  if (!Number.isFinite(price)) return;
+  priorCloseCache.set(symbol.toUpperCase(), {
+    dayKey: priorSessionDayKey(),
+    price,
+    t: Date.now(),
+  });
+  savePriorCloseDiskCache();
+}
+
+/** Nasdaq `previousClose` can lag by several sessions (e.g. shows 5/15 not 5/18). */
+function nasdaqPreviousCloseLooksStale(nasdaqPrev, open) {
+  if (!Number.isFinite(nasdaqPrev) || !Number.isFinite(open)) return false;
+  return open / nasdaqPrev > 1.02;
+}
+
+async function fetchYahooDailyResult(symbol) {
+  const path =
+    `/v8/finance/chart/${encodeURIComponent(symbol)}?range=5d&interval=1d`;
+  const headers = {
+    "User-Agent": UA,
+    Accept: "application/json,text/plain,*/*",
+    Referer: `https://finance.yahoo.com/quote/${encodeURIComponent(symbol)}`,
+  };
+  let lastStatus = 0;
+  for (const host of ["query1.finance.yahoo.com", "query2.finance.yahoo.com"]) {
+    const r = await fetch(`https://${host}${path}`, { headers });
+    lastStatus = r.status;
+    if (r.status === 429) continue;
+    if (!r.ok) continue;
+    const result = (await r.json())?.chart?.result?.[0];
+    if (result) return result;
+  }
+  throw new Error(`Yahoo daily HTTP ${lastStatus || "failed"}`);
+}
+
+async function fetchYahooDailyShared(symbol) {
+  const sym = symbol.toUpperCase();
+  const existing = yahooDailyInflight.get(sym);
+  if (existing) return existing;
+  const job = (async () => {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        return await fetchYahooDailyResult(sym);
+      } catch (e) {
+        const msg = String(e?.message || e);
+        if (attempt < 2 && msg.includes("429")) {
+          await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+          continue;
+        }
+        throw e;
+      }
+    }
+  })();
+  yahooDailyInflight.set(sym, job);
+  try {
+    return await job;
+  } finally {
+    yahooDailyInflight.delete(sym);
+  }
+}
+
+async function resolvePreviousClose(symbol, nasdaqPrev, open) {
+  const sym = symbol.toUpperCase();
+  const cached = getCachedPreviousClose(sym);
+  if (Number.isFinite(cached)) return cached;
+
+  try {
+    const result = await fetchYahooDailyShared(sym);
+    const yPrev = previousCloseFromYahooDaily(result);
+    if (Number.isFinite(yPrev)) {
+      setCachedPreviousClose(sym, yPrev);
+      return yPrev;
+    }
+  } catch (e) {
+    console.warn(`Previous close for ${sym}:`, e?.message || e);
+  }
+
+  if (nasdaqPreviousCloseLooksStale(nasdaqPrev, open)) {
+    const fallback = priorCloseCache.get(sym);
+    if (Number.isFinite(fallback?.price) && Date.now() - fallback.t < 7 * 86400000) {
+      return fallback.price;
+    }
+  }
+  return nasdaqPrev;
+}
+
+async function enrichPreviousClose(snap) {
+  if (!snap?.symbol) return snap;
+  snap.previousClose = await resolvePreviousClose(
+    snap.symbol,
+    snap.previousClose,
+    snap.open,
+  );
+  return snap;
+}
+
+function applyCachedPreviousClose(snap) {
+  if (!snap?.symbol) return snap;
+  const cached = getCachedPreviousClose(snap.symbol);
+  if (Number.isFinite(cached)) return { ...snap, previousClose: cached };
+  return snap;
+}
+
+async function warmPriorCloseCache(symbols) {
+  for (const sym of symbols || ["ROP"]) {
+    if (Number.isFinite(getCachedPreviousClose(sym))) continue;
+    for (let attempt = 0; attempt < 6; attempt++) {
+      try {
+        const result = await fetchYahooDailyResult(sym);
+        const yPrev = previousCloseFromYahooDaily(result);
+        if (Number.isFinite(yPrev)) {
+          setCachedPreviousClose(sym, yPrev);
+          console.log(`Prior close for ${sym}: $${yPrev.toFixed(2)}`);
+          break;
+        }
+      } catch (e) {
+        if (attempt === 5) console.warn(`Warm prior close ${sym}:`, e?.message || e);
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+    }
+  }
+}
+
 function extractExtendedBridge(series, marketOpen, offsetMs) {
   const prev = etParts(previousTradingDayMs(marketOpen));
   const bridgeStart =
@@ -198,17 +390,30 @@ function extractExtendedBridge(series, marketOpen, offsetMs) {
     .sort((a, b) => a.t - b.t);
 }
 
+/** Today's after-hours: 4:00 PM – 8:00 PM ET. */
+function extractAfterHoursBridge(series, marketClose) {
+  const bridgeStart = marketClose + 60_000;
+  const bridgeEnd = marketClose + 4 * 60 * 60 * 1000;
+  return series
+    .filter((p) => p.t >= bridgeStart && p.t <= bridgeEnd)
+    .sort((a, b) => a.t - b.t);
+}
+
 async function attachExtendedSeries(snap) {
-  if (!Number.isFinite(snap?.previousClose)) return snap;
-  const { open, offsetMs } = tradingDayBoundsET();
-  // Nasdaq intraday chart already includes today's pre-market bars.
-  if (Array.isArray(snap.series) && snap.series.length) {
-    const fromNasdaq = extractExtendedBridge(snap.series, open, offsetMs);
-    if (fromNasdaq.length >= 2) {
-      snap.extendedSeries = fromNasdaq;
-      return snap;
+  if (!snap) return snap;
+  const { open, close, offsetMs } = tradingDayBoundsET();
+  const full = Array.isArray(snap.series) ? snap.series : [];
+  if (full.length) {
+    const pm = extractExtendedBridge(full, open, offsetMs);
+    if (pm.length >= 2) {
+      snap.premarketSeries = pm;
+      snap.extendedSeries = pm;
     }
+    const ah = extractAfterHoursBridge(full, close);
+    if (ah.length >= 2) snap.afterHoursSeries = ah;
   }
+  const needYahoo = !snap.premarketSeries?.length || !snap.afterHoursSeries?.length;
+  if (!needYahoo) return snap;
   try {
     const r = await fetchYahooChart(snap.symbol, "5d", "5m");
     if (!r.ok) return snap;
@@ -220,8 +425,17 @@ async function attachExtendedSeries(snap) {
     const series = ts
       .map((t, i) => ({ t: t * 1000, c: closes[i] }))
       .filter((p) => Number.isFinite(p.c));
-    const bridge = extractExtendedBridge(series, open, offsetMs);
-    if (bridge.length >= 2) snap.extendedSeries = bridge;
+    if (!snap.premarketSeries?.length) {
+      const bridge = extractExtendedBridge(series, open, offsetMs);
+      if (bridge.length >= 2) {
+        snap.premarketSeries = bridge;
+        snap.extendedSeries = bridge;
+      }
+    }
+    if (!snap.afterHoursSeries?.length) {
+      const ah = extractAfterHoursBridge(series, close);
+      if (ah.length >= 2) snap.afterHoursSeries = ah;
+    }
   } catch (e) {
     console.warn(`Extended hours for ${snap.symbol}:`, e?.message || e);
   }
@@ -441,7 +655,7 @@ async function refreshSymbol(symbol) {
     pushHistory(symbol, snap.regularMarketTime || Date.now(), snap.price);
   }
   snapshots.set(symbol, snap);
-  return attachExtendedSeries(snap);
+  return attachExtendedSeries(await enrichPreviousClose(snap));
 }
 
 app.get("/api/quote", async (req, res) => {
@@ -457,6 +671,15 @@ app.get("/api/quote", async (req, res) => {
     } catch (err) {
       return res.status(502).json({ error: String(err?.message || err) });
     }
+  }
+
+  snap = applyCachedPreviousClose(snap);
+  if (
+    nasdaqPreviousCloseLooksStale(snap.previousClose, snap.open) &&
+    !Number.isFinite(getCachedPreviousClose(symbol))
+  ) {
+    snap = applyCachedPreviousClose(await enrichPreviousClose({ ...snap }));
+    put(cacheKey, snap);
   }
 
   const series = histories.get(symbol) || [];
@@ -586,9 +809,15 @@ async function pollAll() {
   }
 }
 setInterval(pollAll, 15_000);
-pollAll();
+setTimeout(pollAll, 12_000);
 
+loadPriorCloseDiskCache();
 app.listen(PORT, () => {
   // eslint-disable-next-line no-console
   console.log(`Roper screensaver running → http://localhost:${PORT}`);
+  const cached = getCachedPreviousClose("ROP");
+  if (Number.isFinite(cached)) {
+    console.log(`Prior close (cached): $${cached.toFixed(2)}`);
+  }
+  setTimeout(() => warmPriorCloseCache(), 1500);
 });
