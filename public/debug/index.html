@@ -16,7 +16,7 @@
       href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="styles.css?v=9" />
+    <link rel="stylesheet" href="styles.css?v=21" />
     <!-- Discourage TV/console browsers from caching aggressively. These hints
          are non-binding but most browsers honor them on first load. -->
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
@@ -49,7 +49,7 @@
         <span class="settings-toggle-ui" aria-hidden="true"></span>
         <span class="settings-label">Performance mode</span>
       </label>
-      <p class="settings-hint">Turn on for a lighter page (no animated background, simpler chart). Applies immediately — your choice is remembered.</p>
+      <p class="settings-hint">On by default. Turn off for full visuals (animated background, richer chart). Applies immediately — your choice is remembered.</p>
       <label class="settings-row">
         <input type="checkbox" id="debugToggle" />
         <span class="settings-toggle-ui" aria-hidden="true"></span>
@@ -97,18 +97,18 @@
         </div>
         <canvas id="spark" class="spark"></canvas>
       </section>
-
-      <footer class="ticker">
-        <div class="ticker-tag">NEWS</div>
-        <div class="ticker-viewport">
-          <div class="ticker-track" id="tickerTrack"></div>
-        </div>
-      </footer>
     </main>
+
+    <footer class="ticker">
+      <div class="ticker-tag">NEWS</div>
+      <div class="ticker-viewport">
+        <div class="ticker-track" id="tickerTrack"></div>
+      </div>
+    </footer>
 
     <div id="diag" class="diag hidden"></div>
 
-    <script src="config.js?v=9"></script>
-    <script src="app.js?v=9" defer></script>
+    <script src="config.js?v=21"></script>
+    <script src="app.js?v=21" defer></script>
   </body>
 </html>

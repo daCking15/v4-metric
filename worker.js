@@ -356,7 +356,9 @@ async function handleQuote(url) {
 }
 
 // ---------- News (Google News RSS) ----------
-const NEWS_QUERIES = ["Roper Technologies", "Vertafore", "QQ Catalyst"];
+// Single RSS request (faster cold start than 3 parallel Google News fetches).
+const NEWS_QUERY = "Roper Technologies";
+const NEWS_ITEM_LIMIT = 5;
 
 const HTML_ENTITIES = {
   "&amp;": "&",
@@ -375,7 +377,7 @@ const decodeEntities = (s) =>
     .replace(/&(amp|lt|gt|quot|apos|nbsp|#39);/g, (m) => HTML_ENTITIES[m] || m);
 const stripTags = (s) => s.replace(/<[^>]+>/g, "").trim();
 
-function parseRss(xml) {
+function parseRss(xml, maxItems = 12) {
   const items = [];
   const re = /<item>([\s\S]*?)<\/item>/g;
   let m;
@@ -401,6 +403,7 @@ function parseRss(xml) {
       source,
       pubDate: pubDateRaw ? Date.parse(pubDateRaw) || null : null,
     });
+    if (items.length >= maxItems) break;
   }
   return items;
 }
@@ -416,14 +419,11 @@ async function fetchGoogleNews(query) {
 }
 
 async function handleNews() {
-  const cacheKey = "news";
+  const cacheKey = "news-v2";
   const cached = cacheGet(cacheKey, 5 * 60_000);
   if (cached) return json(cached, { cacheControl: "public, max-age=300" });
   try {
-    const results = await Promise.all(
-      NEWS_QUERIES.map((q) => fetchGoogleNews(q).catch(() => [])),
-    );
-    const flat = results.flat();
+    const flat = await fetchGoogleNews(NEWS_QUERY).catch(() => []);
     const seen = new Set();
     const unique = [];
     for (const it of flat) {
@@ -433,7 +433,11 @@ async function handleNews() {
       unique.push(it);
     }
     unique.sort((a, b) => (b.pubDate || 0) - (a.pubDate || 0));
-    const payload = { items: unique.slice(0, 40), fetchedAt: Date.now() };
+    const payload = {
+      items: unique.slice(0, NEWS_ITEM_LIMIT),
+      limit: NEWS_ITEM_LIMIT,
+      fetchedAt: Date.now(),
+    };
     cachePut(cacheKey, payload);
     return json(payload, { cacheControl: "public, max-age=300" });
   } catch (err) {

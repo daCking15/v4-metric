@@ -381,7 +381,8 @@ app.get("/api/quote", async (req, res) => {
 });
 
 // ---------- News (Google News RSS) ----------
-const NEWS_QUERIES = ["Roper Technologies", "Vertafore", "QQ Catalyst"];
+const NEWS_QUERY = "Roper Technologies";
+const NEWS_ITEM_LIMIT = 5;
 
 const HTML_ENTITIES = {
   "&amp;": "&",
@@ -401,7 +402,7 @@ const decodeEntities = (s) =>
 
 const stripTags = (s) => s.replace(/<[^>]+>/g, "").trim();
 
-function parseRss(xml) {
+function parseRss(xml, maxItems = 12) {
   const items = [];
   const re = /<item>([\s\S]*?)<\/item>/g;
   let m;
@@ -429,6 +430,7 @@ function parseRss(xml) {
       source,
       pubDate: pubDateRaw ? Date.parse(pubDateRaw) || null : null,
     });
+    if (items.length >= maxItems) break;
   }
   return items;
 }
@@ -444,14 +446,11 @@ async function fetchGoogleNews(query) {
 }
 
 app.get("/api/news", async (_req, res) => {
-  const cacheKey = "news";
+  const cacheKey = "news-v2";
   const cached = get(cacheKey, 5 * 60_000); // refresh every 5 min
   if (cached) return res.json(cached);
   try {
-    const results = await Promise.all(
-      NEWS_QUERIES.map((q) => fetchGoogleNews(q).catch(() => [])),
-    );
-    const flat = results.flat();
+    const flat = await fetchGoogleNews(NEWS_QUERY).catch(() => []);
     // Dedupe by lowercased + collapsed title.
     const seen = new Set();
     const unique = [];
@@ -463,7 +462,11 @@ app.get("/api/news", async (_req, res) => {
     }
     // Sort newest first.
     unique.sort((a, b) => (b.pubDate || 0) - (a.pubDate || 0));
-    const payload = { items: unique.slice(0, 40), fetchedAt: Date.now() };
+    const payload = {
+      items: unique.slice(0, NEWS_ITEM_LIMIT),
+      limit: NEWS_ITEM_LIMIT,
+      fetchedAt: Date.now(),
+    };
     put(cacheKey, payload);
     res.json(payload);
   } catch (err) {

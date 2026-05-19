@@ -34,7 +34,7 @@ function loadLiteMode() {
   } catch {
     /* ignore */
   }
-  return false;
+  return true;
 }
 
 function saveLiteMode(on) {
@@ -112,6 +112,274 @@ function downsampleSeries(points, max) {
   return out;
 }
 
+/** Vertical spacing between staggered label rows when labels overlap horizontally. */
+const CHART_LABEL_ROW_STEP = 32;
+/** Space between the vertical guide and the left edge of the label text. */
+const CHART_LABEL_PAD_LEFT = 8;
+/** Equal gap above/below label ink where guides are hidden. */
+const CHART_LABEL_MASK_PAD_Y = 5;
+
+function measureLabelInk(ctx, text) {
+  const prev = ctx.textBaseline;
+  ctx.textBaseline = "alphabetic";
+  const m = ctx.measureText(text);
+  ctx.textBaseline = prev;
+  const inkAscent = m.actualBoundingBoxAscent || m.fontBoundingBoxAscent || 14;
+  const inkDescent = m.actualBoundingBoxDescent || m.fontBoundingBoxDescent || 4;
+  return {
+    width: m.width,
+    inkAscent,
+    inkDescent,
+    inkHeight: inkAscent + inkDescent,
+  };
+}
+
+/** Draw a vertical dashed guide, skipping symmetric gaps over other labels at this X. */
+function strokeVerticalGuide(ctx, x, yTop, yBottom, placed, skip = null) {
+  const blocks = placed
+    .filter((p) => p !== skip && x >= p.left && x <= p.right)
+    .map((p) => ({ top: p.maskTop, bottom: p.maskBottom }))
+    .sort((a, b) => a.top - b.top);
+
+  let y = yTop;
+  for (const block of blocks) {
+    if (y >= yBottom) break;
+    if (block.bottom <= y) continue;
+    if (block.top > yBottom) break;
+    if (block.top > y) {
+      ctx.moveTo(x, y);
+      ctx.lineTo(x, block.top);
+    }
+    y = Math.max(y, block.bottom);
+  }
+  if (y < yBottom) {
+    ctx.moveTo(x, y);
+    ctx.lineTo(x, yBottom);
+  }
+}
+/** Headlines shown in the scrolling ticker (keep small for fast load on TV). */
+const NEWS_TICKER_LIMIT = 5;
+const NEWS_CACHE_KEY = "rop-screensaver:news-v2";
+const NEWS_TICKER_MIN_LOOP_SEC = 18;
+const NEWS_TICKER_PX_PER_SEC = 100;
+
+/** Y on the drawn polyline at time `t` (so markers sit on the visible chart). */
+function chartYOnPlottedSeries(pts, t, py) {
+  if (!pts?.length) return null;
+  if (t <= pts[0].t) return py(pts[0].c);
+  const last = pts[pts.length - 1];
+  if (t >= last.t) return py(last.c);
+  for (let i = 1; i < pts.length; i++) {
+    const b = pts[i];
+    if (b.t >= t) {
+      const a = pts[i - 1];
+      const span = b.t - a.t;
+      const u = span > 0 ? (t - a.t) / span : 0;
+      return py(a.c + (b.c - a.c) * u);
+    }
+  }
+  return py(pts[0].c);
+}
+
+/**
+ * Position OPEN/HIGH/LOW labels beside the guide (X + pad), stagger rows on
+ * overlap, and compute how far each guide line extends (lower rows run longer).
+ */
+function layoutChartEventLabels(ctx, events, options) {
+  const {
+    font,
+    px,
+    clampX,
+    baseY,
+    rowStep = CHART_LABEL_ROW_STEP,
+    overlapGap = 12,
+    maxRows = 3,
+    minLabelX = 0,
+    maxLabelRight = Infinity,
+    labelPadLeft = CHART_LABEL_PAD_LEFT,
+  } = options;
+
+  ctx.save();
+  ctx.font = font;
+
+  const placed = [...events]
+    .sort((a, b) => px(a.t) - px(b.t))
+    .map((ev) => {
+      const X = clampX(px(ev.t));
+      const { width: tw, inkAscent, inkHeight } = measureLabelInk(ctx, ev.label);
+      // Sit label just to the right of the guide (not flush on the line).
+      let labelX = X + labelPadLeft;
+      if (labelX < minLabelX) labelX = minLabelX;
+      return {
+        ev,
+        X,
+        labelX,
+        left: labelX,
+        right: labelX + tw,
+        tw,
+        row: 0,
+        inkAscent,
+        inkHeight,
+        lblY: 0,
+        drawY: 0,
+        maskTop: 0,
+        maskBottom: 0,
+        lineEndY: 0,
+      };
+    });
+
+  for (let i = 0; i < placed.length; i++) {
+    for (let row = 0; row < maxRows; row++) {
+      let fits = true;
+      for (let j = 0; j < i; j++) {
+        if (placed[j].row !== row) continue;
+        if (
+          placed[i].left - overlapGap < placed[j].right &&
+          placed[i].right + overlapGap > placed[j].left
+        ) {
+          fits = false;
+          break;
+        }
+      }
+      if (fits) {
+        placed[i].row = row;
+        break;
+      }
+      if (row === maxRows - 1) placed[i].row = row;
+    }
+  }
+
+  for (const p of placed) {
+    // lblY = top of painted glyphs (not em-box top — avoids extra gap above cap height).
+    p.lblY = baseY + p.row * rowStep;
+    p.drawY = p.lblY + p.inkAscent;
+    p.maskTop = p.lblY - CHART_LABEL_MASK_PAD_Y;
+    p.maskBottom = p.lblY + p.inkHeight + CHART_LABEL_MASK_PAD_Y;
+    p.lineEndY = p.lblY + p.inkHeight / 2;
+  }
+
+  ctx.restore();
+  return placed;
+}
+
+function drawChartEventGuidesAndLabels(
+  ctx,
+  placed,
+  py,
+  { plottedPts, ringRadius = 5, ringWidth = 2, glow = false },
+) {
+  const markerY = (p) => {
+    if (p.ev.isOpen) return py(p.ev.price);
+    return chartYOnPlottedSeries(plottedPts, p.ev.t, py) ?? py(p.ev.price);
+  };
+
+  ctx.setLineDash([3, 4]);
+  ctx.lineWidth = 1;
+  for (const p of placed) {
+    const Y = markerY(p);
+    ctx.strokeStyle = p.ev.lineColor;
+    ctx.beginPath();
+    strokeVerticalGuide(ctx, p.X, Y, p.lineEndY, placed, p);
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+
+  for (const p of placed) {
+    const Y = markerY(p);
+    ctx.save();
+    if (glow) {
+      ctx.shadowColor = p.ev.color;
+      ctx.shadowBlur = 12;
+    }
+    ctx.strokeStyle = p.ev.color;
+    ctx.lineWidth = glow ? 2.2 : ringWidth;
+    ctx.beginPath();
+    ctx.arc(p.X, Y, ringRadius, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  ctx.textBaseline = "alphabetic";
+  ctx.textAlign = "left";
+  for (const p of placed) {
+    ctx.fillStyle = p.ev.color;
+    ctx.fillText(p.ev.label, p.labelX, p.drawY);
+  }
+}
+
+/**
+ * Series point to anchor a HIGH/LOW ring on the drawn line. Label text may still
+ * use the official quote value; Y position always uses the intraday close at `t`.
+ */
+function findExtremePoint(points, mode, officialPrice) {
+  if (!points?.length) return null;
+  const better =
+    mode === "high"
+      ? (a, b) => (a.c > b.c ? a : b)
+      : (a, b) => (a.c < b.c ? a : b);
+  if (Number.isFinite(officialPrice)) {
+    const tol = Math.max(0.02, officialPrice * 1e-4);
+    const match = points.filter((p) => Math.abs(p.c - officialPrice) <= tol);
+    if (match.length) return match.reduce(better, match[0]);
+    return points.reduce(
+      (best, p) =>
+        Math.abs(p.c - officialPrice) < Math.abs(best.c - officialPrice) ? p : best,
+      points[0],
+    );
+  }
+  return points.reduce(better, points[0]);
+}
+
+function buildChartEvents({ points, openTime, openPrice, highPrice, lowPrice, currentPrice }) {
+  const events = [];
+  const sameish = (a, b) => Math.abs(a - b) < 0.005;
+  if (Number.isFinite(openPrice)) {
+    events.push({
+      t: openTime,
+      price: openPrice,
+      isOpen: true,
+      color: "rgba(220, 230, 250, 0.95)",
+      lineColor: "rgba(255,255,255,0.5)",
+      label: `OPEN $${openPrice.toFixed(2)}`,
+    });
+  }
+  if (
+    Number.isFinite(highPrice) &&
+    !(Number.isFinite(openPrice) && sameish(highPrice, openPrice)) &&
+    !(Number.isFinite(currentPrice) && sameish(highPrice, currentPrice))
+  ) {
+    const pt = findExtremePoint(points, "high", highPrice) || {
+      t: openTime,
+      c: highPrice,
+    };
+    events.push({
+      t: pt.t,
+      price: pt.c,
+      color: "#2ee07a",
+      lineColor: "rgba(46,224,122,0.6)",
+      label: `HIGH $${highPrice.toFixed(2)}`,
+    });
+  }
+  if (
+    Number.isFinite(lowPrice) &&
+    !(Number.isFinite(openPrice) && sameish(lowPrice, openPrice)) &&
+    !(Number.isFinite(currentPrice) && sameish(lowPrice, currentPrice))
+  ) {
+    const pt = findExtremePoint(points, "low", lowPrice) || {
+      t: openTime,
+      c: lowPrice,
+    };
+    events.push({
+      t: pt.t,
+      price: pt.c,
+      color: "#ff5470",
+      lineColor: "rgba(255,84,112,0.6)",
+      label: `LOW $${lowPrice.toFixed(2)}`,
+    });
+  }
+  return events;
+}
+
 // ---------- Diagnostics (on-screen, since TV browsers have no devtools) ----------
 const DEBUG_STORAGE_KEY = "rop-screensaver:debugPanel";
 
@@ -156,7 +424,7 @@ const diag = (() => {
       `Stock:   ${slots.quote}`,
       `Weather: ${slots.weather}`,
       `News:    ${slots.news}`,
-      `Build:   v9 · ${liteMode ? "lite" : "full"}${isDebugUrl() ? " · /debug" : ""} · API: ${API_BASE || "(same-origin)"}`,
+      `Build:   v21 · ${liteMode ? "lite" : "full"}${isDebugUrl() ? " · /debug" : ""} · API: ${API_BASE || "(same-origin)"}`,
     ];
     if (errors.length) {
       lines.push("");
@@ -181,6 +449,9 @@ const diag = (() => {
   function setDebugEnabled(on) {
     debugEnabled = !!on;
     saveDebugEnabled(debugEnabled);
+    const toggle = document.getElementById("debugToggle");
+    if (toggle) toggle.checked = debugEnabled;
+    applyVisibility();
     render();
   }
 
@@ -192,6 +463,8 @@ const diag = (() => {
       `Promise: ${(e.reason && (e.reason.message || e.reason)) || "unhandled"}`,
     ),
   );
+
+  applyVisibility();
 
   return {
     set,
@@ -435,8 +708,8 @@ function tradingDayBounds() {
   };
 }
 
-// Lightweight chart path for Performance mode (Xbox / TV). No shadows,
-// destination-out masking, or collision layout — keeps the main thread free.
+// Lightweight chart for Performance mode — same OPEN/HIGH/LOW markers + vertical
+// guide lines as the full chart, without shadows or expensive compositing.
 function drawSparkLite(series, prev, change, quote) {
   const cvs = els.spark;
   if (!cvs) return;
@@ -450,15 +723,19 @@ function drawSparkLite(series, prev, change, quote) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
 
-  const AXIS_H = 72;
+  const EVENT_FONT = "600 16px 'Space Grotesk', system-ui, sans-serif";
+  const AXIS_H = 108;
   const chartH = h - AXIS_H;
+  const labelBaseY = chartH + 14;
   const { open: openTime, close: closeTime } = tradingDayBounds();
   const xMin = openTime;
   const xMax = closeTime;
+  const CHART_PAD = Math.max(56, Math.min(96, w * 0.06));
 
   let pts = (series || [])
     .filter((p) => Number.isFinite(p.c) && p.t >= openTime - 60_000 && p.t <= closeTime + 60_000)
     .sort((a, b) => a.t - b.t);
+  const ptsFull = pts;
   pts = downsampleSeries(pts, 72);
 
   const openPrice = Number.isFinite(quote?.open) ? quote.open : pts[0]?.c ?? null;
@@ -474,6 +751,7 @@ function drawSparkLite(series, prev, change, quote) {
     : pts.length
       ? Math.min(...pts.map((p) => p.c))
       : openPrice;
+  const currentPrice = pts.at(-1)?.c ?? null;
 
   const refs = [openPrice, highPrice, lowPrice, ...pts.map((p) => p.c)].filter(Number.isFinite);
   let yMin = Math.min(...refs);
@@ -486,24 +764,27 @@ function drawSparkLite(series, prev, change, quote) {
   yMin -= yPad;
   yMax += yPad;
 
-  const px = (t) => ((t - xMin) / Math.max(1, xMax - xMin)) * w;
+  const plotW = w - CHART_PAD * 2;
+  const px = (t) => CHART_PAD + ((t - xMin) / Math.max(1, xMax - xMin)) * plotW;
   const py = (c) => chartH - ((c - yMin) / Math.max(0.0001, yMax - yMin)) * chartH;
+  const clampX = (x) => Math.max(CHART_PAD, Math.min(w - CHART_PAD, x));
+
   const up = change >= 0;
   const stroke = up ? "#2ee07a" : "#ff5470";
   const fill1 = up ? "rgba(46,224,122,0.18)" : "rgba(255,84,112,0.18)";
 
   ctx.strokeStyle = "rgba(255,255,255,0.1)";
   ctx.beginPath();
-  ctx.moveTo(0, chartH);
-  ctx.lineTo(w, chartH);
+  ctx.moveTo(CHART_PAD, chartH);
+  ctx.lineTo(w - CHART_PAD, chartH);
   ctx.stroke();
 
   if (Number.isFinite(openPrice)) {
     ctx.strokeStyle = "rgba(255,255,255,0.14)";
     ctx.setLineDash([4, 6]);
     ctx.beginPath();
-    ctx.moveTo(0, py(openPrice));
-    ctx.lineTo(w, py(openPrice));
+    ctx.moveTo(CHART_PAD, py(openPrice));
+    ctx.lineTo(w - CHART_PAD, py(openPrice));
     ctx.stroke();
     ctx.setLineDash([]);
   }
@@ -520,6 +801,7 @@ function drawSparkLite(series, prev, change, quote) {
     ctx.strokeStyle = stroke;
     ctx.lineWidth = 2;
     ctx.lineJoin = "round";
+    ctx.lineCap = "round";
     ctx.beginPath();
     pts.forEach((p, i) => {
       const X = px(p.t);
@@ -530,23 +812,36 @@ function drawSparkLite(series, prev, change, quote) {
     ctx.stroke();
   }
 
-  ctx.font = "600 14px 'Space Grotesk', system-ui, sans-serif";
-  ctx.textBaseline = "top";
-  const labels = [];
-  if (Number.isFinite(openPrice)) labels.push({ x: px(openTime), text: `OPEN $${openPrice.toFixed(2)}`, color: "rgba(220,230,250,0.9)" });
-  if (Number.isFinite(highPrice)) labels.push({ x: px(openTime + (closeTime - openTime) * 0.55), text: `HIGH $${highPrice.toFixed(2)}`, color: "#2ee07a" });
-  if (Number.isFinite(lowPrice)) labels.push({ x: px(openTime + (closeTime - openTime) * 0.72), text: `LOW $${lowPrice.toFixed(2)}`, color: "#ff5470" });
-  labels.forEach((lb, i) => {
-    ctx.fillStyle = lb.color;
-    ctx.textAlign = "center";
-    ctx.fillText(lb.text, lb.x, chartH + 10 + i * 18);
+  const events = buildChartEvents({
+    points: ptsFull,
+    openTime,
+    openPrice,
+    highPrice,
+    lowPrice,
+    currentPrice,
+  });
+
+  const placed = layoutChartEventLabels(ctx, events, {
+    font: EVENT_FONT,
+    px,
+    clampX,
+    baseY: labelBaseY,
+    minLabelX: CHART_PAD,
+    maxLabelRight: w - CHART_PAD,
+  });
+
+  ctx.font = EVENT_FONT;
+  drawChartEventGuidesAndLabels(ctx, placed, py, {
+    plottedPts: pts,
+    ringRadius: 5,
+    ringWidth: 2,
   });
 
   if (pts.length) {
     const lp = pts[pts.length - 1];
     ctx.fillStyle = stroke;
     ctx.beginPath();
-    ctx.arc(px(lp.t), py(lp.c), 5, 0, Math.PI * 2);
+    ctx.arc(clampX(px(lp.t)), py(lp.c), 5, 0, Math.PI * 2);
     ctx.fill();
   }
 }
@@ -569,11 +864,10 @@ function drawSpark(series, prev, change, quote) {
   // Sized for TV legibility.
   const EVENT_FONT = "600 18px 'Space Grotesk', system-ui, sans-serif";
   const HOUR_FONT = "500 15px 'Space Grotesk', system-ui, sans-serif";
-  const AXIS_H = 96;
+  const AXIS_H = 108;
   const chartH = h - AXIS_H;
-  const EVENT_ROW_Y = [chartH + 16, chartH + 44]; // staggered label rows
-  const EVENT_ROW_H = 22;
-  const HOUR_LBL_Y = chartH + 74;
+  const labelBaseY = chartH + 14;
+  const HOUR_LBL_Y = chartH + 84;
 
   // X axis: regular trading session, 9:30 → 16:00 ET.
   const { open: openTime, close: closeTime } = tradingDayBounds();
@@ -706,53 +1000,15 @@ function drawSpark(series, prev, change, quote) {
     ctx.restore();
   }
 
-  // ---- Event markers (open / high / low) — each with a vertical reference
-  // line down to the axis strip and a label below the chart.
-  const events = [];
-  if (Number.isFinite(openPrice)) {
-    events.push({
-      t: openTime,
-      price: openPrice,
-      color: "rgba(220, 230, 250, 0.95)",
-      lineColor: "rgba(255,255,255,0.5)",
-      label: `OPEN $${openPrice.toFixed(2)}`,
-    });
-  }
-  const sameish = (a, b) => Math.abs(a - b) < 0.005;
-  if (
-    Number.isFinite(highPrice) &&
-    !(Number.isFinite(openPrice) && sameish(highPrice, openPrice)) &&
-    !(Number.isFinite(currentPrice) && sameish(highPrice, currentPrice))
-  ) {
-    const pt = pts.reduce(
-      (best, p) => (p.c > best.c ? p : best),
-      pts[0] || { t: openTime, c: highPrice },
-    );
-    events.push({
-      t: pt.t,
-      price: highPrice,
-      color: "#2ee07a",
-      lineColor: "rgba(46,224,122,0.6)",
-      label: `HIGH $${highPrice.toFixed(2)}`,
-    });
-  }
-  if (
-    Number.isFinite(lowPrice) &&
-    !(Number.isFinite(openPrice) && sameish(lowPrice, openPrice)) &&
-    !(Number.isFinite(currentPrice) && sameish(lowPrice, currentPrice))
-  ) {
-    const pt = pts.reduce(
-      (best, p) => (p.c < best.c ? p : best),
-      pts[0] || { t: openTime, c: lowPrice },
-    );
-    events.push({
-      t: pt.t,
-      price: lowPrice,
-      color: "#ff5470",
-      lineColor: "rgba(255,84,112,0.6)",
-      label: `LOW $${lowPrice.toFixed(2)}`,
-    });
-  }
+  // ---- Event markers (open / high / low) — vertical guide + label in axis strip.
+  const events = buildChartEvents({
+    points: pts,
+    openTime,
+    openPrice,
+    highPrice,
+    lowPrice,
+    currentPrice,
+  });
 
   // Clamp event X positions to a safe gutter so markers/rings never get cut
   // off at the canvas edges.
@@ -761,92 +1017,22 @@ function drawSpark(series, prev, change, quote) {
     return Math.max(EDGE, Math.min(w - EDGE, rawX));
   }
 
-  // Assign each event a row (0 or 1) so labels don't overlap horizontally.
-  ctx.save();
+  const placed = layoutChartEventLabels(ctx, events, {
+    font: EVENT_FONT,
+    px,
+    clampX,
+    baseY: labelBaseY,
+    minLabelX: EDGE + 2,
+    maxLabelRight: w - EDGE,
+  });
+
   ctx.font = EVENT_FONT;
-  const placed = [...events]
-    .sort((a, b) => px(a.t) - px(b.t))
-    .map((ev) => {
-      const X = clampX(px(ev.t));
-      const tw = ctx.measureText(ev.label).width;
-      let align = "center";
-      if (X < 80) align = "left";
-      else if (X > w - 80) align = "right";
-      const left =
-        align === "left" ? X : align === "right" ? X - tw : X - tw / 2;
-      const right = left + tw;
-      return { ev, X, align, left, right, tw, row: 0 };
-    });
-  for (let i = 0; i < placed.length; i++) {
-    for (let j = 0; j < i; j++) {
-      if (placed[j].row !== placed[i].row) continue;
-      const overlap =
-        placed[i].left - 8 < placed[j].right &&
-        placed[i].right + 8 > placed[j].left;
-      if (overlap) {
-        placed[i].row = 1 - placed[i].row;
-        j = -1;
-      }
-    }
-  }
-  ctx.restore();
-
-  // 1) Draw each event's full-length dashed line — from marker on the chart
-  //    all the way down past its row to bottom of the axis strip. We'll mask
-  //    out the parts that sit under labels in step 3.
-  for (const p of placed) {
-    const X = p.X;
-    const Y = py(p.ev.price);
-    const lblY = EVENT_ROW_Y[Math.min(p.row, EVENT_ROW_Y.length - 1)];
-    ctx.save();
-    ctx.strokeStyle = p.ev.lineColor;
-    ctx.setLineDash([3, 4]);
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(X, Y);
-    ctx.lineTo(X, lblY + EVENT_ROW_H - 2);
-    ctx.stroke();
-    ctx.restore();
-  }
-
-  // 2) Punch out the chart canvas in the rectangles where labels will appear,
-  //    so the dashed lines appear to disappear *behind* the text — revealing
-  //    the page background through the canvas.
-  ctx.save();
-  ctx.globalCompositeOperation = "destination-out";
-  ctx.fillStyle = "#000";
-  for (const p of placed) {
-    const lblY = EVENT_ROW_Y[Math.min(p.row, EVENT_ROW_Y.length - 1)];
-    ctx.fillRect(p.left - 3, lblY - 1, p.tw + 6, EVENT_ROW_H);
-  }
-  ctx.restore();
-
-  // 3) Marker rings on the chart, drawn last so the glow sits over the line.
-  for (const p of placed) {
-    const X = p.X;
-    const Y = py(p.ev.price);
-    ctx.save();
-    ctx.strokeStyle = p.ev.color;
-    ctx.lineWidth = 2.2;
-    ctx.shadowColor = p.ev.color;
-    ctx.shadowBlur = 12;
-    ctx.beginPath();
-    ctx.arc(X, Y, 6, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.restore();
-  }
-
-  // 4) Labels in their assigned rows.
-  ctx.save();
-  ctx.font = EVENT_FONT;
-  ctx.textBaseline = "top";
-  for (const p of placed) {
-    const lblY = EVENT_ROW_Y[Math.min(p.row, EVENT_ROW_Y.length - 1)];
-    ctx.textAlign = p.align;
-    ctx.fillStyle = p.ev.color;
-    ctx.fillText(p.ev.label, p.X, lblY);
-  }
-  ctx.restore();
+  drawChartEventGuidesAndLabels(ctx, placed, py, {
+    plottedPts: pts,
+    ringRadius: 6,
+    ringWidth: 2.2,
+    glow: true,
+  });
 
   // ---- Current price end-dot
   if (pts.length) {
@@ -1005,51 +1191,103 @@ function ambientBg() {
 const HTML_ESC = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
 const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => HTML_ESC[c]);
 
-function renderNews(items) {
-  lastNewsItems = items;
-  if (!els.tickerTrack) return;
-  if (!items || !items.length) {
-    els.tickerTrack.innerHTML = "";
-    return;
-  }
-  const list = liteMode ? items.slice(0, 12) : items;
-  const block = list
-    .map(
-      (it) => `
-        <span class="ticker-item">
-          ${it.source ? `<span class="src">${escapeHtml(it.source)}</span><span class="sep">·</span>` : ""}
-          <span class="title">${escapeHtml(it.title)}</span>
-        </span>`,
-    )
-    .join("");
-  // Duplicate the content so the keyframe `translateX(-50%)` produces a
-  // seamless loop.
-  els.tickerTrack.innerHTML = block + block;
+function newsItemsForTicker(items) {
+  return (items || []).slice(0, NEWS_TICKER_LIMIT);
+}
 
-  // Scale the scroll duration to the rendered width so the speed stays
-  // consistent regardless of how many headlines we have.
+function readNewsCache() {
+  try {
+    const raw = sessionStorage.getItem(NEWS_CACHE_KEY);
+    if (!raw) return null;
+    const { items, at } = JSON.parse(raw);
+    if (!Array.isArray(items) || Date.now() - at > 5 * 60_000) return null;
+    return newsItemsForTicker(items);
+  } catch {
+    return null;
+  }
+}
+
+function writeNewsCache(items) {
+  try {
+    sessionStorage.setItem(
+      NEWS_CACHE_KEY,
+      JSON.stringify({ items: newsItemsForTicker(items), at: Date.now() }),
+    );
+  } catch {
+    /* private mode / quota */
+  }
+}
+
+function tickerItemHtml(it) {
+  return `
+    <span class="ticker-item">
+      ${it.source ? `<span class="src">${escapeHtml(it.source)}</span><span class="sep">·</span>` : ""}
+      <span class="title">${escapeHtml(it.title)}</span>
+    </span>`;
+}
+
+/** Start / restart the scroll animation (keyframes move -50% = one copy of the duplicated track). */
+function applyTickerAnimation(track) {
+  if (!track) return;
   requestAnimationFrame(() => {
-    const trackWidth = els.tickerTrack.scrollWidth;
-    // ~80 pixels per second feels readable on a TV.
-    const seconds = Math.max(60, Math.round(trackWidth / 80));
-    els.tickerTrack.style.animationDuration = `${seconds}s`;
+    requestAnimationFrame(() => {
+      const loopWidth = Math.max(1, track.scrollWidth / 2);
+      const seconds = Math.max(
+        NEWS_TICKER_MIN_LOOP_SEC,
+        Math.round(loopWidth / NEWS_TICKER_PX_PER_SEC),
+      );
+      track.style.animationDuration = `${seconds}s`;
+    });
   });
+}
+
+function showNewsPlaceholder(message = "Loading headlines…") {
+  if (!els.tickerTrack) return;
+  const item = `<span class="ticker-item"><span class="title">${escapeHtml(message)}</span></span>`;
+  const block = new Array(4).fill(item).join("");
+  els.tickerTrack.innerHTML = block + block;
+  applyTickerAnimation(els.tickerTrack);
+}
+
+/** @returns {number} headlines placed in the ticker */
+function renderNews(items) {
+  if (!els.tickerTrack) return 0;
+  if (!items || !items.length) {
+    showNewsPlaceholder("No headlines available");
+    return 0;
+  }
+  const list = newsItemsForTicker(items);
+  lastNewsItems = list;
+  const block = list.map((it) => tickerItemHtml(it)).join("");
+  els.tickerTrack.innerHTML = block + block;
+  applyTickerAnimation(els.tickerTrack);
+  return list.length;
+}
+
+function formatNewsDiag({ shown, apiCount, fromCache, refreshing }) {
+  const parts = [];
+  if (fromCache) parts.push("cached");
+  parts.push(`${shown}/${NEWS_TICKER_LIMIT} in ticker`);
+  if (Number.isFinite(apiCount) && apiCount !== shown) {
+    parts.push(`API sent ${apiCount}`);
+  }
+  if (refreshing) parts.push("refreshing");
+  return `${parts.join(" · ")} @ ${new Date().toLocaleTimeString()}`;
 }
 
 async function fetchNews() {
   try {
     diag.set("news", "fetching…");
-    const r = await fetchWithTimeout(api("/api/news"));
+    const r = await fetchWithTimeout(api("/api/news"), 10_000);
     if (!r.ok) {
       diag.set("news", `HTTP ${r.status}`);
       return;
     }
     const json = await r.json();
-    renderNews(json.items || []);
-    diag.set(
-      "news",
-      `OK (${(json.items || []).length} items) @ ${new Date().toLocaleTimeString()}`,
-    );
+    const apiItems = json.items || [];
+    const shown = renderNews(apiItems);
+    writeNewsCache(apiItems);
+    diag.set("news", `OK · ${formatNewsDiag({ shown, apiCount: apiItems.length })}`);
   } catch (err) {
     diag.set("news", `FAIL: ${(err && err.message) || err}`);
   }
@@ -1062,10 +1300,17 @@ function boot() {
 
   if (!liteMode) startAmbientBg();
 
-  // Stagger network calls so the main thread can process input (settings btn).
+  const cachedNews = readNewsCache();
+  if (cachedNews?.length) {
+    const shown = renderNews(cachedNews);
+    diag.set("news", formatNewsDiag({ shown, fromCache: true, refreshing: true }));
+  } else {
+    showNewsPlaceholder();
+  }
+  // Weather + news start immediately; quote shortly after so settings stay responsive.
   fetchWeather();
-  setTimeout(fetchQuote, liteMode ? 400 : 50);
-  setTimeout(fetchNews, liteMode ? 2500 : 400);
+  fetchNews();
+  setTimeout(fetchQuote, liteMode ? 300 : 50);
 
   setInterval(fetchQuote, 10_000);
   setInterval(fetchWeather, 10 * 60_000);

@@ -21,6 +21,11 @@
 
   /* Safe-area padding used by .stage, exposed so children can break out. */
   --safe-pad: clamp(40px, 5.5vmin, 96px);
+
+  /* News ticker: fixed bar + modest bottom overscan (separate from --safe-pad). */
+  --ticker-bar-h: clamp(48px, 5vmin, 72px);
+  --ticker-overscan: max(12px, env(safe-area-inset-bottom, 0px));
+  --ticker-total-h: calc(var(--ticker-bar-h) + var(--ticker-overscan));
 }
 
 * {
@@ -33,6 +38,7 @@ html,
 body {
   width: 100%;
   height: 100%;
+  height: 100dvh;
   overflow: hidden;
   background: radial-gradient(
       ellipse at 20% 10%,
@@ -72,14 +78,16 @@ body.idle .settings-panel * {
   position: relative;
   z-index: 1;
   width: 100%;
-  height: 100%;
+  height: 100dvh;
+  max-height: 100dvh;
   display: grid;
-  grid-template-rows: auto 1fr auto;
-  /* Equal title-safe padding on all four sides (uses vmin so the spacing
-     scales with the smaller viewport dimension and stays consistent on TVs). */
+  grid-template-rows: auto minmax(0, 1fr);
   padding: var(--safe-pad);
-  gap: clamp(20px, 3vh, 48px);
+  /* Reserve space for the fixed news ticker (bar + TV bottom safe area). */
+  padding-bottom: var(--ticker-total-h);
+  gap: clamp(16px, 2.5vh, 40px);
   overflow: hidden;
+  box-sizing: border-box;
 }
 
 /* ---------- Top bar ---------- */
@@ -163,8 +171,13 @@ body.idle .settings-panel * {
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
   text-align: center;
   position: relative;
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
+  overflow: hidden;
 }
 
 
@@ -263,13 +276,19 @@ html.lite .ticker-track {
   gap: 14px;
   cursor: pointer;
   user-select: none;
+  position: relative;
 }
 .settings-row input {
   position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 44px;
+  height: 24px;
+  margin: 0;
   opacity: 0;
-  width: 0;
-  height: 0;
-  pointer-events: none;
+  cursor: pointer;
+  z-index: 2;
 }
 .settings-label {
   font-size: var(--top-sub);
@@ -281,6 +300,7 @@ html.lite .ticker-track {
   flex-shrink: 0;
   width: 44px;
   height: 24px;
+  pointer-events: none;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.12);
   border: 1px solid var(--card-border);
@@ -316,7 +336,7 @@ html.lite .ticker-track {
    TV browsers). */
 .diag {
   position: fixed;
-  bottom: calc(var(--safe-pad, 48px) + clamp(56px, 6vmin, 84px));
+  bottom: calc(var(--ticker-total-h) + 12px);
   right: clamp(16px, 2vmin, 32px);
   z-index: 50;
   font-family: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
@@ -340,14 +360,21 @@ html.lite .ticker-track {
   pointer-events: none;
 }
 
-/* ---------- News ticker ---------- */
+/* ---------- News ticker (pinned to viewport bottom) ---------- */
 .ticker {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: var(--ticker-overscan);
+  z-index: 25;
   display: flex;
-  align-items: stretch;
-  height: clamp(48px, 5vmin, 72px);
-  /* Break out of the stage's safe-area padding so the ticker spans the
-     full screen width and touches the bottom edge of the TV. */
-  margin: 0 calc(-1 * var(--safe-pad)) calc(-1 * var(--safe-pad));
+  align-items: center;
+  margin: 0;
+  width: 100%;
+  max-width: 100vw;
+  height: var(--ticker-bar-h);
+  padding: 0;
+  box-sizing: border-box;
   border-top: 1px solid var(--card-border);
   /* Darker translucent gradient instead of `backdrop-filter: blur()`, which
      is expensive on smart-TV / console browsers and was a major contributor
@@ -364,6 +391,9 @@ html.lite .ticker-track {
 .ticker-tag {
   display: flex;
   align-items: center;
+  flex-shrink: 0;
+  height: var(--ticker-bar-h);
+  line-height: 1;
   padding: 0 22px;
   font-size: var(--top-sub);
   letter-spacing: 0.32em;
@@ -376,6 +406,8 @@ html.lite .ticker-track {
 
 .ticker-viewport {
   flex: 1;
+  height: var(--ticker-bar-h);
+  min-width: 0;
   overflow: hidden;
   position: relative;
   mask-image: linear-gradient(
@@ -398,8 +430,9 @@ html.lite .ticker-track {
   display: inline-flex;
   align-items: center;
   height: 100%;
+  line-height: 1.2;
   white-space: nowrap;
-  animation: ticker-scroll 180s linear infinite;
+  animation: ticker-scroll 36s linear infinite;
   will-change: transform;
 }
 
@@ -489,10 +522,12 @@ html.lite .ticker-track {
 }
 
 .spark {
-  width: min(88vw, 1600px);
-  height: clamp(280px, 32vh, 480px);
-  margin-top: clamp(24px, 3vh, 48px);
+  width: min(100%, 1600px);
+  max-width: 100%;
+  height: clamp(200px, min(32vh, 36vmin), 480px);
+  margin-top: clamp(16px, 2vh, 36px);
   display: block;
+  flex-shrink: 1;
 }
 
 .weather {

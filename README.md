@@ -95,7 +95,7 @@ That's it. The included workflow (`.github/workflows/deploy.yml`) publishes `pub
 
 ## Debug URL
 
-Performance mode and the on-screen debug panel are **off** by default. Open the **`/debug`** path to force both on for that visit (ignores saved settings):
+**Performance mode** is on by default (lighter page for TVs). The on-screen **debug panel** is off unless you open the **`/debug`** path or enable it in Settings:
 
 - GitHub Pages: `https://<you>.github.io/<repo>/debug/`
 - Local: `http://localhost:3000/debug/`
