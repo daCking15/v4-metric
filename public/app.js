@@ -180,7 +180,9 @@ function tradingDayBounds() {
 function drawSpark(series, prev, change, quote) {
   const cvs = els.spark;
   const ctx = cvs.getContext("2d");
-  const dpr = window.devicePixelRatio || 1;
+  // Clamp DPR to 2 — on TVs that report 3+ this avoids gigantic bitmaps that
+  // can OOM constrained browsers (Xbox, smart TVs).
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
   const w = cvs.clientWidth;
   const h = cvs.clientHeight;
   cvs.width = w * dpr;
@@ -538,23 +540,31 @@ async function fetchWeather() {
 }
 
 // ---------- Ambient background ----------
+// Tuned for low-end displays (Xbox/Smart TV browsers). Key constraints:
+//   * Canvas bitmap is pinned to DPR=1 — the bg is intentionally blurry, so a
+//     1:1 backing store saves a LOT of memory on 4K @ DPR=2 (~130 MB → ~32 MB).
+//   * Frame rate capped to ~30 fps to halve CPU vs. requestAnimationFrame's
+//     native 60 fps.
+//   * Star count hard-capped so 4K resolutions don't generate ~900 particles.
+//   * Animation pauses when the tab/window is hidden.
 function ambientBg() {
   const cvs = els.bg;
   const ctx = cvs.getContext("2d");
-  let w, h, dpr;
+  let w, h;
   const stars = [];
+  const MAX_STARS = 320;
+  const FRAME_INTERVAL_MS = 1000 / 30;
 
   function resize() {
-    dpr = window.devicePixelRatio || 1;
     w = window.innerWidth;
     h = window.innerHeight;
     cvs.style.width = w + "px";
     cvs.style.height = h + "px";
-    cvs.width = Math.round(w * dpr);
-    cvs.height = Math.round(h * dpr);
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    cvs.width = w;
+    cvs.height = h;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
     stars.length = 0;
-    const N = Math.floor((w * h) / 9000);
+    const N = Math.min(MAX_STARS, Math.floor((w * h) / 9000));
     for (let i = 0; i < N; i++) {
       stars.push({
         x: Math.random() * w,
@@ -570,32 +580,33 @@ function ambientBg() {
   window.addEventListener("resize", resize);
 
   let t = 0;
-  function frame() {
-    t += 0.016;
+  let lastFrame = 0;
+  function frame(now) {
+    requestAnimationFrame(frame);
+    if (document.hidden) return; // pause entirely when offscreen
+    if (now - lastFrame < FRAME_INTERVAL_MS) return; // throttle to ~30 fps
+    lastFrame = now;
+    t += 0.033;
     ctx.clearRect(0, 0, w, h);
 
-    // Faint grid
     ctx.save();
     ctx.strokeStyle = "rgba(122, 162, 255, 0.05)";
     ctx.lineWidth = 1;
     const gap = 80;
     const ox = (t * 6) % gap;
     const oy = (t * 4) % gap;
+    ctx.beginPath();
     for (let x = -gap + ox; x < w; x += gap) {
-      ctx.beginPath();
       ctx.moveTo(x, 0);
       ctx.lineTo(x, h);
-      ctx.stroke();
     }
     for (let y = -gap + oy; y < h; y += gap) {
-      ctx.beginPath();
       ctx.moveTo(0, y);
       ctx.lineTo(w, y);
-      ctx.stroke();
     }
+    ctx.stroke();
     ctx.restore();
 
-    // Drifting stars
     for (const s of stars) {
       s.phase += s.v;
       const a = s.a * (0.6 + 0.4 * Math.sin(s.phase));
@@ -604,10 +615,8 @@ function ambientBg() {
       ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
       ctx.fill();
     }
-
-    requestAnimationFrame(frame);
   }
-  frame();
+  requestAnimationFrame(frame);
 }
 try {
   ambientBg();

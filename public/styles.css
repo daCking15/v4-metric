@@ -184,12 +184,15 @@ body.idle * {
      full screen width and touches the bottom edge of the TV. */
   margin: 0 calc(-1 * var(--safe-pad)) calc(-1 * var(--safe-pad));
   border-top: 1px solid var(--card-border);
+  /* Darker translucent gradient instead of `backdrop-filter: blur()`, which
+     is expensive on smart-TV / console browsers and was a major contributor
+     to "page not responding" lockups on Xbox. The visual result is nearly
+     identical against the dark background. */
   background: linear-gradient(
     180deg,
-    rgba(10, 15, 28, 0.7) 0%,
-    rgba(5, 7, 13, 0.92) 100%
+    rgba(10, 15, 28, 0.86) 0%,
+    rgba(5, 7, 13, 0.97) 100%
   );
-  backdrop-filter: blur(12px);
   overflow: hidden;
 }
 
