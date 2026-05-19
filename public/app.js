@@ -1,3 +1,13 @@
+// ---------- Config ----------
+// API_BASE comes from public/config.js. Empty string = same-origin (the
+// bundled Express server). Set to your Cloudflare Worker URL when deploying
+// to GitHub Pages / any other static host.
+const API_BASE = (
+  (typeof window !== "undefined" && window.APP_CONFIG && window.APP_CONFIG.API_BASE) ||
+  ""
+).replace(/\/$/, "");
+const api = (path) => `${API_BASE}${path}`;
+
 // ---------- DOM ----------
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -93,7 +103,7 @@ let lastPrice = null;
 
 async function fetchQuote() {
   try {
-    const r = await fetch("/api/quote?symbol=ROP&range=1d&interval=2m");
+    const r = await fetch(api("/api/quote?symbol=ROP&range=1d&interval=2m"));
     if (!r.ok) return;
     const q = await r.json();
     renderQuote(q);
@@ -640,7 +650,7 @@ function renderNews(items) {
 
 async function fetchNews() {
   try {
-    const r = await fetch("/api/news");
+    const r = await fetch(api("/api/news"));
     if (!r.ok) return;
     const json = await r.json();
     renderNews(json.items || []);

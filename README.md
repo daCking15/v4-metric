@@ -1,57 +1,120 @@
 # Roper TV Screensaver
 
-A fullscreen, ambient TV screensaver that shows:
+A fullscreen, ambient TV screensaver. Shows:
 
-- **ROP (Roper Technologies)** live stock price, change, intraday sparkline, day/52-week range
-- **Denver** clock and weather (Open-Meteo, no API key)
-- A subtle animated starfield + grid background
+- **ROP (Roper Technologies)** live price, change, intraday sparkline, day open/high/low
+- **Denver** clock and weather (Open-Meteo, no key)
+- A scrolling news ticker (Roper / Vertafore / QQ Catalyst headlines)
+- Animated starfield + grid background
+- Auto-hiding cursor
 
-Designed to look good on a big TV in fullscreen.
+Designed for a TV in fullscreen.
 
-## Quick start
+---
+
+## Architecture
+
+```
+┌───────────────────────┐        ┌────────────────────────────┐
+│ Static site           │  GET   │ Cloudflare Worker          │
+│ (GitHub Pages, S3,    │ /api/* │ (proxies Nasdaq + Google   │
+│  local Express, etc.) │ ─────▶ │  News, sets CORS headers)  │
+└───────────────────────┘        └────────────────────────────┘
+```
+
+The frontend reads `public/config.js` for `API_BASE`:
+- Empty string → calls same-origin `/api/*` (so the bundled Node server can serve everything during local dev).
+- A Worker URL → calls the Worker (required for any static deploy like GitHub Pages, since GH Pages has no backend).
+
+---
+
+## Local development (Node)
 
 ```bash
 npm install
 npm start
 ```
 
-Then open `http://localhost:3000` and press `Cmd+Ctrl+F` (Safari) or `F11` (Chrome/Firefox) to enter fullscreen.
+Open <http://localhost:3000>. `server.js` proxies Nasdaq + Google News and serves `public/` — same as before.
 
-## How it works
+---
 
-- `server.js` — tiny Express app. Serves the static UI from `public/` and exposes a single
-  `GET /api/quote?symbol=ROP` endpoint that proxies Yahoo Finance's public chart endpoint
-  (avoids browser CORS issues). Results are cached for 15s.
-- `public/index.html`, `styles.css`, `app.js` — the UI. The clock + weather are fetched
-  directly from the browser (Open-Meteo is CORS-friendly). The stock price refreshes every 15s.
+## Deploy: GitHub Pages (frontend) + Cloudflare Worker (backend)
+
+### 1. Deploy the Cloudflare Worker
+
+You only need to do this once. The Worker is the same proxy logic as `server.js`, just on Cloudflare's edge — free tier (100k req/day) covers this screensaver ~10x over.
+
+```bash
+npx wrangler login        # opens browser to authenticate (one-time)
+npx wrangler deploy       # uses wrangler.toml + worker.js
+```
+
+Wrangler prints the deployed URL, e.g.:
+
+```
+Published rop-screensaver-proxy
+  https://rop-screensaver-proxy.<your-handle>.workers.dev
+```
+
+Sanity-check it:
+
+```bash
+curl https://rop-screensaver-proxy.<your-handle>.workers.dev/api/quote?symbol=ROP | head -c 400
+```
+
+> Prefer clicking around? You can also create the worker via the Cloudflare dashboard:
+> *Workers & Pages → Create → Hello World → Edit code → paste `worker.js` → Deploy.*
+
+### 2. Point the frontend at the Worker
+
+Edit `public/config.js`:
+
+```js
+window.APP_CONFIG = {
+  API_BASE: "https://rop-screensaver-proxy.<your-handle>.workers.dev",
+};
+```
+
+### 3. Push to GitHub & enable Pages
+
+```bash
+git add -A
+git commit -m "Deploy"
+git push
+```
+
+In your GitHub repo:
+
+1. **Settings → Pages**
+2. **Source:** *GitHub Actions*
+
+That's it. The included workflow (`.github/workflows/deploy.yml`) publishes `public/` whenever you push to `main`. The site URL will be `https://<you>.github.io/<repo>/`.
+
+---
 
 ## Configuration
 
-You can override the symbol or interval via query params if you want to embed it elsewhere
-(e.g. an iframe):
+`public/config.js`:
 
+| Key        | What it does                                                            |
+| ---------- | ----------------------------------------------------------------------- |
+| `API_BASE` | Worker URL. Leave empty for same-origin (local Express).                |
+
+`wrangler.toml` — Cloudflare Worker name + compatibility date. Change `name` if you want a different `*.workers.dev` subdomain.
+
+To swap the tracked symbol or city, edit `public/app.js` and `worker.js` (the symbol list is hardcoded right now).
+
+---
+
+## Running as an actual screensaver
+
+```bash
+# Chrome kiosk against your deployed Pages URL
+/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
+  --kiosk --app="https://<you>.github.io/<repo>/"
 ```
-GET /api/quote?symbol=ROP&range=1d&interval=2m
-```
 
-The UI itself is hard-coded to ROP and Denver — edit `public/app.js` and `public/index.html` to change.
+Pair with `caffeinate -d` to keep the display awake.
 
-## Running it as an actual screensaver
-
-A couple of easy options:
-
-1. **Browser kiosk mode.** On macOS, launch Chrome with:
-   ```bash
-   /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
-     --kiosk --app=http://localhost:3000
-   ```
-2. **AppleScript wake hook** or `caffeinate` to keep the display on while it's showing.
-3. **Apple TV / Fire TV / etc.** — just point a browser app at the server's IP on your LAN
-   (`http://<your-mac-ip>:3000`).
-
-## Notes
-
-- Yahoo's public chart endpoint is unofficial. If it ever rate-limits or breaks, swap the
-  upstream in `server.js` for another provider (e.g. Finnhub, Polygon, Alpha Vantage — most
-  free tiers will work fine for a 15s poll).
-- The UI hides the cursor (`cursor: none`) since it's intended as a screensaver.
+For TVs that have a built-in browser (Apple TV, Fire TV), just open the GitHub Pages URL.

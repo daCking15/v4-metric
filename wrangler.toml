@@ -1,0 +1,9 @@
+# Cloudflare Worker config. Rename the worker before first deploy if you want.
+# Deploy with: `npx wrangler deploy`
+name = "rop-screensaver-proxy"
+main = "worker.js"
+compatibility_date = "2025-05-01"
+
+# Free `*.workers.dev` subdomain. Flip to false (and add a `routes` block) if
+# you want to mount it on a custom domain later.
+workers_dev = true
