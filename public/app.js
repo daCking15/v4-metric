@@ -8,6 +8,102 @@ const API_BASE = (
 ).replace(/\/$/, "");
 const api = (path) => `${API_BASE}${path}`;
 
+// ---------- Performance / lite mode (auto on Xbox & TV browsers) ----------
+const LITE_STORAGE_KEY = "rop-screensaver:liteMode";
+
+function detectConsoleBrowser() {
+  const ua = navigator.userAgent || "";
+  return /Xbox|XBOX|PlayStation|Nintendo|SmartTV|SMART-TV|HbbTV|Web0S|WebOS|Tizen|CrKey|AppleTV|AFTB|AFTM/i.test(
+    ua,
+  );
+}
+
+function loadLiteMode() {
+  try {
+    const v = localStorage.getItem(LITE_STORAGE_KEY);
+    if (v === "1") return true;
+    if (v === "0") return false;
+  } catch {
+    /* ignore */
+  }
+  return detectConsoleBrowser();
+}
+
+function saveLiteMode(on) {
+  try {
+    localStorage.setItem(LITE_STORAGE_KEY, on ? "1" : "0");
+  } catch {
+    /* ignore */
+  }
+}
+
+let liteMode = loadLiteMode();
+if (liteMode) document.documentElement.classList.add("lite");
+let stopAmbientBg = null;
+let lastQuoteData = null;
+let lastNewsItems = null;
+
+function applyPerformanceMode(on) {
+  liteMode = !!on;
+  saveLiteMode(liteMode);
+  document.documentElement.classList.toggle("lite", liteMode);
+
+  if (liteMode) {
+    if (stopAmbientBg) {
+      stopAmbientBg();
+      stopAmbientBg = null;
+    }
+    const cvs = document.getElementById("bg");
+    if (cvs) {
+      const ctx = cvs.getContext("2d");
+      if (ctx) ctx.clearRect(0, 0, cvs.width, cvs.height);
+    }
+  } else if (!stopAmbientBg) {
+    startAmbientBg();
+  }
+
+  if (lastQuoteData) {
+    const q = lastQuoteData;
+    const prev = q.previousClose;
+    const price = q.price;
+    const change =
+      Number.isFinite(price) && Number.isFinite(prev) ? price - prev : NaN;
+    scheduleSparkDraw(q.series, prev, change, q);
+  }
+
+  if (lastNewsItems) renderNews(lastNewsItems);
+
+  if (diag.isDebugEnabled()) diag.refresh();
+}
+
+function startAmbientBg() {
+  if (stopAmbientBg) return;
+  try {
+    stopAmbientBg = ambientBg();
+  } catch (err) {
+    console.warn("ambient bg disabled:", err);
+  }
+}
+
+async function fetchWithTimeout(url, ms = 22_000) {
+  if (typeof AbortController === "undefined") return fetch(url);
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  try {
+    return await fetch(url, { signal: ctrl.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function downsampleSeries(points, max) {
+  if (!points || points.length <= max) return points ? points.slice() : [];
+  const out = [];
+  const step = (points.length - 1) / (max - 1);
+  for (let i = 0; i < max; i++) out.push(points[Math.round(i * step)]);
+  return out;
+}
+
 // ---------- Diagnostics (on-screen, since TV browsers have no devtools) ----------
 const DEBUG_STORAGE_KEY = "rop-screensaver:debugPanel";
 
@@ -43,12 +139,12 @@ const diag = (() => {
   }
 
   function render() {
-    if (!el) return;
+    if (!el || !debugEnabled) return;
     const lines = [
       `Stock:   ${slots.quote}`,
       `Weather: ${slots.weather}`,
       `News:    ${slots.news}`,
-      `Build:   v5 · API: ${API_BASE || "(same-origin)"}`,
+      `Build:   v7 · ${liteMode ? "lite" : "full"} · API: ${API_BASE || "(same-origin)"}`,
     ];
     if (errors.length) {
       lines.push("");
@@ -85,11 +181,10 @@ const diag = (() => {
     ),
   );
 
-  setInterval(render, 1000);
-  render();
   return {
     set,
     err,
+    refresh: render,
     setDebugEnabled,
     isDebugEnabled: () => debugEnabled,
   };
@@ -99,10 +194,12 @@ const diag = (() => {
 function initSettings() {
   const btn = document.getElementById("settingsBtn");
   const panel = document.getElementById("settingsPanel");
-  const toggle = document.getElementById("debugToggle");
-  if (!btn || !panel || !toggle) return;
+  const debugToggle = document.getElementById("debugToggle");
+  const liteToggle = document.getElementById("liteToggle");
+  if (!btn || !panel) return;
 
-  toggle.checked = diag.isDebugEnabled();
+  if (debugToggle) debugToggle.checked = diag.isDebugEnabled();
+  if (liteToggle) liteToggle.checked = liteMode;
 
   function setPanelOpen(open) {
     panel.classList.toggle("hidden", !open);
@@ -112,17 +209,28 @@ function initSettings() {
 
   btn.addEventListener("click", (e) => {
     e.stopPropagation();
+    e.preventDefault();
     setPanelOpen(panel.hidden);
   });
 
   panel.addEventListener("click", (e) => e.stopPropagation());
 
-  toggle.addEventListener("change", () => {
-    diag.setDebugEnabled(toggle.checked);
-  });
+  if (debugToggle) {
+    debugToggle.addEventListener("change", () => {
+      diag.setDebugEnabled(debugToggle.checked);
+    });
+  }
 
-  document.addEventListener("click", () => {
-    if (!panel.hidden) setPanelOpen(false);
+  if (liteToggle) {
+    liteToggle.addEventListener("change", () => {
+      applyPerformanceMode(liteToggle.checked);
+    });
+  }
+
+  document.addEventListener("click", (e) => {
+    if (panel.hidden) return;
+    if (panel.contains(e.target) || btn.contains(e.target)) return;
+    setPanelOpen(false);
   });
 
   document.addEventListener("keydown", (e) => {
@@ -226,7 +334,7 @@ let lastPrice = null;
 async function fetchQuote() {
   try {
     diag.set("quote", "fetching…");
-    const r = await fetch(api("/api/quote?symbol=ROP&range=1d&interval=2m"));
+    const r = await fetchWithTimeout(api("/api/quote?symbol=ROP&range=1d&interval=2m"));
     if (!r.ok) {
       diag.set("quote", `HTTP ${r.status}`);
       return;
@@ -240,6 +348,7 @@ async function fetchQuote() {
 }
 
 function renderQuote(q) {
+  lastQuoteData = q;
   const price = q.price;
   const prev = q.previousClose;
   const change = Number.isFinite(price) && Number.isFinite(prev) ? price - prev : NaN;
@@ -272,7 +381,17 @@ function renderQuote(q) {
     els.changeArrow.textContent = "—";
   }
 
-  drawSpark(q.series, prev, change, q);
+  scheduleSparkDraw(q.series, prev, change, q);
+}
+
+let sparkDrawPending = 0;
+function scheduleSparkDraw(series, prev, change, quote) {
+  if (sparkDrawPending) cancelAnimationFrame(sparkDrawPending);
+  sparkDrawPending = requestAnimationFrame(() => {
+    sparkDrawPending = 0;
+    if (liteMode) drawSparkLite(series, prev, change, quote);
+    else drawSpark(series, prev, change, quote);
+  });
 }
 
 // ---------- Sparkline ----------
@@ -302,6 +421,122 @@ function tradingDayBounds() {
     open: Date.UTC(y, mo - 1, d, 9, 30) + diff * 60_000,
     close: Date.UTC(y, mo - 1, d, 16, 0) + diff * 60_000,
   };
+}
+
+// Lightweight chart path for Performance mode (Xbox / TV). No shadows,
+// destination-out masking, or collision layout — keeps the main thread free.
+function drawSparkLite(series, prev, change, quote) {
+  const cvs = els.spark;
+  if (!cvs) return;
+  const ctx = cvs.getContext("2d");
+  const dpr = 1;
+  const w = cvs.clientWidth;
+  const h = cvs.clientHeight;
+  if (w < 2 || h < 2) return;
+  cvs.width = w * dpr;
+  cvs.height = h * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+
+  const AXIS_H = 72;
+  const chartH = h - AXIS_H;
+  const { open: openTime, close: closeTime } = tradingDayBounds();
+  const xMin = openTime;
+  const xMax = closeTime;
+
+  let pts = (series || [])
+    .filter((p) => Number.isFinite(p.c) && p.t >= openTime - 60_000 && p.t <= closeTime + 60_000)
+    .sort((a, b) => a.t - b.t);
+  pts = downsampleSeries(pts, 72);
+
+  const openPrice = Number.isFinite(quote?.open) ? quote.open : pts[0]?.c ?? null;
+  if (pts.length === 0 && !Number.isFinite(openPrice)) return;
+
+  const highPrice = Number.isFinite(quote?.dayHigh)
+    ? quote.dayHigh
+    : pts.length
+      ? Math.max(...pts.map((p) => p.c))
+      : openPrice;
+  const lowPrice = Number.isFinite(quote?.dayLow)
+    ? quote.dayLow
+    : pts.length
+      ? Math.min(...pts.map((p) => p.c))
+      : openPrice;
+
+  const refs = [openPrice, highPrice, lowPrice, ...pts.map((p) => p.c)].filter(Number.isFinite);
+  let yMin = Math.min(...refs);
+  let yMax = Math.max(...refs);
+  if (yMin === yMax) {
+    yMin -= 0.5;
+    yMax += 0.5;
+  }
+  const yPad = Math.max((yMax - yMin) * 0.12, 0.25);
+  yMin -= yPad;
+  yMax += yPad;
+
+  const px = (t) => ((t - xMin) / Math.max(1, xMax - xMin)) * w;
+  const py = (c) => chartH - ((c - yMin) / Math.max(0.0001, yMax - yMin)) * chartH;
+  const up = change >= 0;
+  const stroke = up ? "#2ee07a" : "#ff5470";
+  const fill1 = up ? "rgba(46,224,122,0.18)" : "rgba(255,84,112,0.18)";
+
+  ctx.strokeStyle = "rgba(255,255,255,0.1)";
+  ctx.beginPath();
+  ctx.moveTo(0, chartH);
+  ctx.lineTo(w, chartH);
+  ctx.stroke();
+
+  if (Number.isFinite(openPrice)) {
+    ctx.strokeStyle = "rgba(255,255,255,0.14)";
+    ctx.setLineDash([4, 6]);
+    ctx.beginPath();
+    ctx.moveTo(0, py(openPrice));
+    ctx.lineTo(w, py(openPrice));
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  if (pts.length >= 2) {
+    ctx.fillStyle = fill1;
+    ctx.beginPath();
+    ctx.moveTo(px(pts[0].t), chartH);
+    pts.forEach((p) => ctx.lineTo(px(p.t), py(p.c)));
+    ctx.lineTo(px(pts[pts.length - 1].t), chartH);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = 2;
+    ctx.lineJoin = "round";
+    ctx.beginPath();
+    pts.forEach((p, i) => {
+      const X = px(p.t);
+      const Y = py(p.c);
+      if (i === 0) ctx.moveTo(X, Y);
+      else ctx.lineTo(X, Y);
+    });
+    ctx.stroke();
+  }
+
+  ctx.font = "600 14px 'Space Grotesk', system-ui, sans-serif";
+  ctx.textBaseline = "top";
+  const labels = [];
+  if (Number.isFinite(openPrice)) labels.push({ x: px(openTime), text: `OPEN $${openPrice.toFixed(2)}`, color: "rgba(220,230,250,0.9)" });
+  if (Number.isFinite(highPrice)) labels.push({ x: px(openTime + (closeTime - openTime) * 0.55), text: `HIGH $${highPrice.toFixed(2)}`, color: "#2ee07a" });
+  if (Number.isFinite(lowPrice)) labels.push({ x: px(openTime + (closeTime - openTime) * 0.72), text: `LOW $${lowPrice.toFixed(2)}`, color: "#ff5470" });
+  labels.forEach((lb, i) => {
+    ctx.fillStyle = lb.color;
+    ctx.textAlign = "center";
+    ctx.fillText(lb.text, lb.x, chartH + 10 + i * 18);
+  });
+
+  if (pts.length) {
+    const lp = pts[pts.length - 1];
+    ctx.fillStyle = stroke;
+    ctx.beginPath();
+    ctx.arc(px(lp.t), py(lp.c), 5, 0, Math.PI * 2);
+    ctx.fill();
+  }
 }
 
 function drawSpark(series, prev, change, quote) {
@@ -653,7 +888,7 @@ async function fetchWeather() {
       "?latitude=39.7392&longitude=-104.9903" +
       "&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,is_day" +
       "&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=America%2FDenver";
-    const r = await fetch(url);
+    const r = await fetchWithTimeout(url);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const data = await r.json();
     const c = data.current || {};
@@ -680,6 +915,7 @@ function ambientBg() {
   const cvs = els.bg;
   const ctx = cvs.getContext("2d");
   let w, h;
+  let running = true;
   const stars = [];
   const MAX_STARS = 320;
   const FRAME_INTERVAL_MS = 1000 / 30;
@@ -711,9 +947,10 @@ function ambientBg() {
   let t = 0;
   let lastFrame = 0;
   function frame(now) {
+    if (!running) return;
     requestAnimationFrame(frame);
-    if (document.hidden) return; // pause entirely when offscreen
-    if (now - lastFrame < FRAME_INTERVAL_MS) return; // throttle to ~30 fps
+    if (document.hidden) return;
+    if (now - lastFrame < FRAME_INTERVAL_MS) return;
     lastFrame = now;
     t += 0.033;
     ctx.clearRect(0, 0, w, h);
@@ -746,24 +983,25 @@ function ambientBg() {
     }
   }
   requestAnimationFrame(frame);
-}
-try {
-  ambientBg();
-} catch (err) {
-  console.warn("ambient bg disabled:", err);
-}
 
+  return () => {
+    running = false;
+    window.removeEventListener("resize", resize);
+  };
+}
 // ---------- News ticker ----------
 const HTML_ESC = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
 const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => HTML_ESC[c]);
 
 function renderNews(items) {
+  lastNewsItems = items;
   if (!els.tickerTrack) return;
   if (!items || !items.length) {
     els.tickerTrack.innerHTML = "";
     return;
   }
-  const block = items
+  const list = liteMode ? items.slice(0, 12) : items;
+  const block = list
     .map(
       (it) => `
         <span class="ticker-item">
@@ -789,7 +1027,7 @@ function renderNews(items) {
 async function fetchNews() {
   try {
     diag.set("news", "fetching…");
-    const r = await fetch(api("/api/news"));
+    const r = await fetchWithTimeout(api("/api/news"));
     if (!r.ok) {
       diag.set("news", `HTTP ${r.status}`);
       return;
@@ -806,13 +1044,22 @@ async function fetchNews() {
 }
 
 // ---------- Boot ----------
-initSettings();
-fetchQuote();
-fetchWeather();
-fetchNews();
-setInterval(fetchQuote, 10_000);            // every 10s
-setInterval(fetchWeather, 10 * 60_000);     // every 10 min
-setInterval(fetchNews, 5 * 60_000);         // every 5 min
+// Settings + clock first so the UI is interactive before any heavy work.
+function boot() {
+  initSettings();
+
+  if (!liteMode) startAmbientBg();
+
+  // Stagger network calls so the main thread can process input (settings btn).
+  fetchWeather();
+  setTimeout(fetchQuote, liteMode ? 400 : 50);
+  setTimeout(fetchNews, liteMode ? 2500 : 400);
+
+  setInterval(fetchQuote, 10_000);
+  setInterval(fetchWeather, 10 * 60_000);
+  setInterval(fetchNews, 5 * 60_000);
+}
+boot();
 
 // Re-draw sparkline on resize (debounced)
 let resizeT;

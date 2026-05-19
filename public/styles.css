@@ -181,11 +181,20 @@ body.idle .settings-panel * {
 .state-dot.pre-post  { background: #f5b94a; box-shadow: 0 0 14px rgba(245,185,74,0.45); }
 
 /* ---------- Settings (top-left) ---------- */
+/* Performance mode: skip the full-screen animated canvas entirely. */
+html.lite #bg {
+  display: none;
+}
+html.lite .ticker-track {
+  animation-duration: 300s !important;
+}
+
 .settings-btn {
   position: fixed;
   top: var(--safe-pad);
   left: var(--safe-pad);
-  z-index: 60;
+  z-index: 10000;
+  pointer-events: auto;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -225,7 +234,8 @@ body.idle .settings-panel * {
   position: fixed;
   top: calc(var(--safe-pad) + clamp(52px, 5.5vmin, 68px));
   left: var(--safe-pad);
-  z-index: 60;
+  z-index: 10001;
+  pointer-events: auto;
   min-width: clamp(220px, 22vw, 300px);
   padding: clamp(14px, 1.5vmin, 20px) clamp(16px, 1.6vmin, 22px);
   border: 1px solid var(--card-border);
@@ -235,6 +245,16 @@ body.idle .settings-panel * {
 }
 .settings-panel.hidden {
   display: none;
+}
+
+.settings-hint {
+  margin: 0 0 14px 0;
+  padding-left: 58px;
+  font-size: clamp(11px, 0.9vw, 13px);
+  line-height: 1.35;
+  color: var(--ink-faint);
+  letter-spacing: 0.04em;
+  text-transform: none;
 }
 
 .settings-row {

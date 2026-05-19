@@ -14,7 +14,7 @@
       href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="./styles.css?v=5" />
+    <link rel="stylesheet" href="./styles.css?v=7" />
     <!-- Discourage TV/console browsers from caching aggressively. These hints
          are non-binding but most browsers honor them on first load. -->
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
@@ -28,6 +28,7 @@
       id="settingsBtn"
       class="settings-btn"
       type="button"
+      tabindex="0"
       aria-label="Settings"
       aria-expanded="false"
       aria-controls="settingsPanel"
@@ -41,6 +42,12 @@
     </button>
 
     <div id="settingsPanel" class="settings-panel hidden" role="dialog" aria-label="Settings" hidden>
+      <label class="settings-row">
+        <input type="checkbox" id="liteToggle" />
+        <span class="settings-toggle-ui" aria-hidden="true"></span>
+        <span class="settings-label">Performance mode</span>
+      </label>
+      <p class="settings-hint">Turn off for full visuals (animated background, richer chart). On by default on Xbox / TV. Applies immediately — your choice is remembered.</p>
       <label class="settings-row">
         <input type="checkbox" id="debugToggle" />
         <span class="settings-toggle-ui" aria-hidden="true"></span>
@@ -99,7 +106,7 @@
 
     <div id="diag" class="diag hidden"></div>
 
-    <script src="./config.js?v=5"></script>
-    <script src="./app.js?v=5" defer></script>
+    <script src="./config.js?v=7"></script>
+    <script src="./app.js?v=7" defer></script>
   </body>
 </html>
