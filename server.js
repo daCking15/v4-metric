@@ -382,7 +382,14 @@ app.get("/api/quote", async (req, res) => {
 
 // ---------- News (Google News RSS) ----------
 const NEWS_QUERY = "Roper Technologies";
-const NEWS_ITEM_LIMIT = 5;
+const NEWS_ITEM_MAX = 15;
+const NEWS_ITEM_DEFAULT = 5;
+
+function newsLimitFromQuery(req) {
+  const n = parseInt(req.query.limit, 10);
+  if (!Number.isFinite(n)) return NEWS_ITEM_DEFAULT;
+  return Math.max(1, Math.min(NEWS_ITEM_MAX, n));
+}
 
 const HTML_ENTITIES = {
   "&amp;": "&",
@@ -445,10 +452,17 @@ async function fetchGoogleNews(query) {
   return parseRss(xml).map((it) => ({ ...it, query }));
 }
 
-app.get("/api/news", async (_req, res) => {
+app.get("/api/news", async (req, res) => {
+  const limit = newsLimitFromQuery(req);
   const cacheKey = "news-v2";
   const cached = get(cacheKey, 5 * 60_000); // refresh every 5 min
-  if (cached) return res.json(cached);
+  if (cached) {
+    return res.json({
+      ...cached,
+      items: (cached.items || []).slice(0, limit),
+      limit,
+    });
+  }
   try {
     const flat = await fetchGoogleNews(NEWS_QUERY).catch(() => []);
     // Dedupe by lowercased + collapsed title.
@@ -462,13 +476,14 @@ app.get("/api/news", async (_req, res) => {
     }
     // Sort newest first.
     unique.sort((a, b) => (b.pubDate || 0) - (a.pubDate || 0));
+    const items = unique.slice(0, NEWS_ITEM_MAX);
     const payload = {
-      items: unique.slice(0, NEWS_ITEM_LIMIT),
-      limit: NEWS_ITEM_LIMIT,
+      items,
+      limit,
       fetchedAt: Date.now(),
     };
     put(cacheKey, payload);
-    res.json(payload);
+    res.json({ ...payload, items: items.slice(0, limit) });
   } catch (err) {
     res.status(500).json({ error: String(err?.message || err) });
   }

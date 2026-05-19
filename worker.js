@@ -358,7 +358,14 @@ async function handleQuote(url) {
 // ---------- News (Google News RSS) ----------
 // Single RSS request (faster cold start than 3 parallel Google News fetches).
 const NEWS_QUERY = "Roper Technologies";
-const NEWS_ITEM_LIMIT = 5;
+const NEWS_ITEM_MAX = 15;
+const NEWS_ITEM_DEFAULT = 5;
+
+function newsLimitFromUrl(url) {
+  const n = parseInt(url.searchParams.get("limit"), 10);
+  if (!Number.isFinite(n)) return NEWS_ITEM_DEFAULT;
+  return Math.max(1, Math.min(NEWS_ITEM_MAX, n));
+}
 
 const HTML_ENTITIES = {
   "&amp;": "&",
@@ -418,10 +425,20 @@ async function fetchGoogleNews(query) {
   return parseRss(xml).map((it) => ({ ...it, query }));
 }
 
-async function handleNews() {
+async function handleNews(url) {
+  const limit = newsLimitFromUrl(url);
   const cacheKey = "news-v2";
   const cached = cacheGet(cacheKey, 5 * 60_000);
-  if (cached) return json(cached, { cacheControl: "public, max-age=300" });
+  if (cached) {
+    return json(
+      {
+        ...cached,
+        items: (cached.items || []).slice(0, limit),
+        limit,
+      },
+      { cacheControl: "public, max-age=300" },
+    );
+  }
   try {
     const flat = await fetchGoogleNews(NEWS_QUERY).catch(() => []);
     const seen = new Set();
@@ -433,13 +450,17 @@ async function handleNews() {
       unique.push(it);
     }
     unique.sort((a, b) => (b.pubDate || 0) - (a.pubDate || 0));
+    const items = unique.slice(0, NEWS_ITEM_MAX);
     const payload = {
-      items: unique.slice(0, NEWS_ITEM_LIMIT),
-      limit: NEWS_ITEM_LIMIT,
+      items,
+      limit,
       fetchedAt: Date.now(),
     };
     cachePut(cacheKey, payload);
-    return json(payload, { cacheControl: "public, max-age=300" });
+    return json(
+      { ...payload, items: items.slice(0, limit) },
+      { cacheControl: "public, max-age=300" },
+    );
   } catch (err) {
     return json({ error: String(err?.message || err) }, { status: 500 });
   }
@@ -456,7 +477,7 @@ export default {
     }
     const url = new URL(request.url);
     if (url.pathname === "/api/quote") return handleQuote(url);
-    if (url.pathname === "/api/news") return handleNews();
+    if (url.pathname === "/api/news") return handleNews(url);
     if (url.pathname === "/" || url.pathname === "/health") {
       return json({
         ok: true,

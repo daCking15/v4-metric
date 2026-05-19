@@ -16,7 +16,7 @@
       href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="styles.css?v=21" />
+    <link rel="stylesheet" href="styles.css?v=27" />
     <!-- Discourage TV/console browsers from caching aggressively. These hints
          are non-binding but most browsers honor them on first load. -->
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
@@ -26,6 +26,7 @@
   <body>
     <canvas id="bg"></canvas>
 
+    <div id="settingsDock" class="settings-dock">
     <button
       id="settingsBtn"
       class="settings-btn"
@@ -35,10 +36,9 @@
       aria-expanded="false"
       aria-controls="settingsPanel"
     >
-      <svg class="settings-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <svg class="settings-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
         <path
-          fill="currentColor"
-          d="M12 15.5A3.5 3.5 0 1 0 12 8.5a3.5 3.5 0 0 0 0 7Zm8.94-2.06a1.5 1.5 0 0 0 .3-1.65l-1.12-1.94a1.5 1.5 0 0 0-1.4-.73h-.22a6.5 6.5 0 0 0-.64-1.54l.13-.22a1.5 1.5 0 0 0-.12-1.65L16.7 3.3a1.5 1.5 0 0 0-1.65-.3l-.22.13a6.5 6.5 0 0 0-1.54-.64V2.27a1.5 1.5 0 0 0-.73-1.4L11.82.75a1.5 1.5 0 0 0-1.65 0L8.23 1.87a1.5 1.5 0 0 0-.73 1.4v.22a6.5 6.5 0 0 0-1.54.64l-.22-.13a1.5 1.5 0 0 0-1.65.12L2.15 5.04a1.5 1.5 0 0 0-.3 1.65l.13.22a6.5 6.5 0 0 0-.64 1.54H1.42a1.5 1.5 0 0 0-1.4.73L.9 10.89a1.5 1.5 0 0 0 0 1.65l1.12 1.94c.33.57.93.9 1.55.73h.22c.2.54.4 1.05.64 1.54l-.13.22a1.5 1.5 0 0 0 .12 1.65l1.12 1.94a1.5 1.5 0 0 0 1.65.3l.22-.13c.49.24 1 .44 1.54.64v.22c.07.57.4 1.07.97 1.24l1.94 1.12a1.5 1.5 0 0 0 1.65 0l1.94-1.12a1.5 1.5 0 0 0 .73-1.4v-.22c.54-.2 1.05-.4 1.54-.64l.22.13a1.5 1.5 0 0 0 1.65-.3l1.12-1.94a1.5 1.5 0 0 0 .12-1.65l-.13-.22a6.5 6.5 0 0 0 .64-1.54h.22c.57-.17.97-.67 1.04-1.24v-.22Z"
+          d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.488.488 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.56-1.62.94l-2.39-.96a.488.488 0 0 0-.59.22L2.74 9.48a.492.492 0 0 0 .12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.03-1.58ZM12 15.6A3.6 3.6 0 1 1 15.6 12 3.6 3.6 0 0 1 12 15.6Z"
         />
       </svg>
     </button>
@@ -49,12 +49,22 @@
         <span class="settings-toggle-ui" aria-hidden="true"></span>
         <span class="settings-label">Performance mode</span>
       </label>
-      <p class="settings-hint">On by default. Turn off for full visuals (animated background, richer chart). Applies immediately — your choice is remembered.</p>
+      <div class="settings-field">
+        <label class="settings-field-label" for="newsCountSelect">News headlines</label>
+        <select id="newsCountSelect" class="settings-select" aria-label="Number of news headlines">
+          <option value="3">3</option>
+          <option value="5">5</option>
+          <option value="8">8</option>
+          <option value="10">10</option>
+          <option value="15">15</option>
+        </select>
+      </div>
       <label class="settings-row">
         <input type="checkbox" id="debugToggle" />
         <span class="settings-toggle-ui" aria-hidden="true"></span>
         <span class="settings-label">Debug panel</span>
       </label>
+    </div>
     </div>
 
     <main class="stage">
@@ -108,7 +118,7 @@
 
     <div id="diag" class="diag hidden"></div>
 
-    <script src="config.js?v=21"></script>
-    <script src="app.js?v=21" defer></script>
+    <script src="config.js?v=27"></script>
+    <script src="app.js?v=27" defer></script>
   </body>
 </html>

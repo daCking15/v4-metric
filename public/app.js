@@ -34,7 +34,7 @@ function loadLiteMode() {
   } catch {
     /* ignore */
   }
-  return true;
+  return false;
 }
 
 function saveLiteMode(on) {
@@ -157,11 +157,34 @@ function strokeVerticalGuide(ctx, x, yTop, yBottom, placed, skip = null) {
     ctx.lineTo(x, yBottom);
   }
 }
-/** Headlines shown in the scrolling ticker (keep small for fast load on TV). */
-const NEWS_TICKER_LIMIT = 5;
+const NEWS_COUNT_STORAGE_KEY = "rop-screensaver:newsCount";
+const NEWS_COUNT_DEFAULT = 5;
+const NEWS_COUNT_MIN = 1;
+const NEWS_COUNT_MAX = 15;
 const NEWS_CACHE_KEY = "rop-screensaver:news-v2";
-const NEWS_TICKER_MIN_LOOP_SEC = 18;
-const NEWS_TICKER_PX_PER_SEC = 100;
+const NEWS_TICKER_MIN_LOOP_SEC = 45;
+const NEWS_TICKER_PX_PER_SEC = 42;
+
+function loadNewsTickerLimit() {
+  try {
+    const v = parseInt(localStorage.getItem(NEWS_COUNT_STORAGE_KEY), 10);
+    if (Number.isFinite(v) && v >= NEWS_COUNT_MIN && v <= NEWS_COUNT_MAX) return v;
+  } catch {
+    /* ignore */
+  }
+  return NEWS_COUNT_DEFAULT;
+}
+
+function saveNewsTickerLimit(n) {
+  try {
+    localStorage.setItem(NEWS_COUNT_STORAGE_KEY, String(n));
+  } catch {
+    /* ignore */
+  }
+}
+
+let newsTickerLimit = loadNewsTickerLimit();
+let lastNewsApiItems = null;
 
 /** Y on the drawn polyline at time `t` (so markers sit on the visible chart). */
 function chartYOnPlottedSeries(pts, t, py) {
@@ -424,7 +447,7 @@ const diag = (() => {
       `Stock:   ${slots.quote}`,
       `Weather: ${slots.weather}`,
       `News:    ${slots.news}`,
-      `Build:   v21 · ${liteMode ? "lite" : "full"}${isDebugUrl() ? " · /debug" : ""} · API: ${API_BASE || "(same-origin)"}`,
+      `Build:   v27 · ${liteMode ? "lite" : "full"}${isDebugUrl() ? " · /debug" : ""} · API: ${API_BASE || "(same-origin)"}`,
     ];
     if (errors.length) {
       lines.push("");
@@ -477,19 +500,28 @@ const diag = (() => {
 
 // ---------- Settings ----------
 function initSettings() {
+  const dock = document.getElementById("settingsDock");
   const btn = document.getElementById("settingsBtn");
   const panel = document.getElementById("settingsPanel");
   const debugToggle = document.getElementById("debugToggle");
   const liteToggle = document.getElementById("liteToggle");
+  const newsCountSelect = document.getElementById("newsCountSelect");
   if (!btn || !panel) return;
 
   if (debugToggle) debugToggle.checked = diag.isDebugEnabled();
   if (liteToggle) liteToggle.checked = liteMode;
+  if (newsCountSelect) {
+    newsCountSelect.value = String(newsTickerLimit);
+    newsCountSelect.addEventListener("change", () => {
+      applyNewsTickerLimit(newsCountSelect.value);
+    });
+  }
 
   function setPanelOpen(open) {
     panel.classList.toggle("hidden", !open);
     panel.hidden = !open;
     btn.setAttribute("aria-expanded", String(open));
+    dock?.classList.toggle("is-open", open);
   }
 
   btn.addEventListener("click", (e) => {
@@ -514,7 +546,7 @@ function initSettings() {
 
   document.addEventListener("click", (e) => {
     if (panel.hidden) return;
-    if (panel.contains(e.target) || btn.contains(e.target)) return;
+    if (dock?.contains(e.target)) return;
     setPanelOpen(false);
   });
 
@@ -1192,7 +1224,22 @@ const HTML_ESC = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "
 const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => HTML_ESC[c]);
 
 function newsItemsForTicker(items) {
-  return (items || []).slice(0, NEWS_TICKER_LIMIT);
+  return (items || []).slice(0, newsTickerLimit);
+}
+
+function applyNewsTickerLimit(n) {
+  newsTickerLimit = Math.max(
+    NEWS_COUNT_MIN,
+    Math.min(NEWS_COUNT_MAX, parseInt(n, 10) || NEWS_COUNT_DEFAULT),
+  );
+  saveNewsTickerLimit(newsTickerLimit);
+  const select = document.getElementById("newsCountSelect");
+  if (select) select.value = String(newsTickerLimit);
+  if (lastNewsApiItems?.length >= newsTickerLimit) {
+    renderNews(lastNewsApiItems);
+  } else {
+    fetchNews();
+  }
 }
 
 function readNewsCache() {
@@ -1211,7 +1258,7 @@ function writeNewsCache(items) {
   try {
     sessionStorage.setItem(
       NEWS_CACHE_KEY,
-      JSON.stringify({ items: newsItemsForTicker(items), at: Date.now() }),
+      JSON.stringify({ items: items || [], at: Date.now() }),
     );
   } catch {
     /* private mode / quota */
@@ -1252,11 +1299,12 @@ function showNewsPlaceholder(message = "Loading headlines…") {
 /** @returns {number} headlines placed in the ticker */
 function renderNews(items) {
   if (!els.tickerTrack) return 0;
-  if (!items || !items.length) {
+  lastNewsApiItems = items || [];
+  if (!lastNewsApiItems.length) {
     showNewsPlaceholder("No headlines available");
     return 0;
   }
-  const list = newsItemsForTicker(items);
+  const list = newsItemsForTicker(lastNewsApiItems);
   lastNewsItems = list;
   const block = list.map((it) => tickerItemHtml(it)).join("");
   els.tickerTrack.innerHTML = block + block;
@@ -1267,7 +1315,7 @@ function renderNews(items) {
 function formatNewsDiag({ shown, apiCount, fromCache, refreshing }) {
   const parts = [];
   if (fromCache) parts.push("cached");
-  parts.push(`${shown}/${NEWS_TICKER_LIMIT} in ticker`);
+  parts.push(`${shown}/${newsTickerLimit} in ticker`);
   if (Number.isFinite(apiCount) && apiCount !== shown) {
     parts.push(`API sent ${apiCount}`);
   }
@@ -1278,7 +1326,7 @@ function formatNewsDiag({ shown, apiCount, fromCache, refreshing }) {
 async function fetchNews() {
   try {
     diag.set("news", "fetching…");
-    const r = await fetchWithTimeout(api("/api/news"), 10_000);
+    const r = await fetchWithTimeout(api(`/api/news?limit=${newsTickerLimit}`), 10_000);
     if (!r.ok) {
       diag.set("news", `HTTP ${r.status}`);
       return;
@@ -1328,7 +1376,7 @@ window.addEventListener("resize", () => {
 // Click anywhere to force a refresh (handy on the TV remote / browser).
 // Ignore clicks on settings controls.
 document.body.addEventListener("click", (e) => {
-  if (e.target.closest(".settings-btn, .settings-panel")) return;
+  if (e.target.closest(".settings-dock")) return;
   fetchQuote();
   fetchWeather();
 });
