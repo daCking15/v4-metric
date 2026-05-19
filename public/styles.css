@@ -520,26 +520,36 @@ html.lite .ticker-track {
   letter-spacing: -0.04em;
   margin-top: 0;
   font-variant-numeric: tabular-nums;
-  background: linear-gradient(180deg, #ffffff 0%, #b9c6df 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  text-shadow: 0 0 60px rgba(255, 255, 255, 0.06);
+  background: none;
+  -webkit-text-fill-color: currentColor;
+  color: #e8eef8;
+  text-shadow: none;
+  filter: none;
   transition: transform 0.45s cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+
+.price.up {
+  color: var(--up);
+}
+
+.price.down {
+  color: var(--down);
+}
+
+.price.flat {
+  color: #e8eef8;
 }
 
 .price.flash-up   { animation: flashUp 0.9s ease-out; }
 .price.flash-down { animation: flashDown 0.9s ease-out; }
 
 @keyframes flashUp {
-  0%   { filter: drop-shadow(0 0 0 var(--up-glow)); }
-  30%  { filter: drop-shadow(0 0 36px var(--up-glow)); }
-  100% { filter: drop-shadow(0 0 0 var(--up-glow)); }
+  0%, 100% { opacity: 1; }
+  35%      { opacity: 0.82; }
 }
 @keyframes flashDown {
-  0%   { filter: drop-shadow(0 0 0 var(--down-glow)); }
-  30%  { filter: drop-shadow(0 0 36px var(--down-glow)); }
-  100% { filter: drop-shadow(0 0 0 var(--down-glow)); }
+  0%, 100% { opacity: 1; }
+  35%      { opacity: 0.82; }
 }
 
 .change-row {

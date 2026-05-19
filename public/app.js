@@ -834,7 +834,7 @@ const diag = (() => {
       `Stock:   ${slots.quote}`,
       `Weather: ${slots.weather}`,
       `News:    ${slots.news}`,
-      `Build:   v60 · ${liteMode ? "lite" : "full"}${isDebugUrl() ? " · /debug" : ""} · API: ${API_BASE || "(same-origin)"}`,
+      `Build:   v62 · ${liteMode ? "lite" : "full"}${isDebugUrl() ? " · /debug" : ""} · API: ${API_BASE || "(same-origin)"}`,
     ];
     if (errors.length) {
       lines.push("");
@@ -1083,10 +1083,19 @@ function renderQuote(q) {
   const price = q.price;
   const { change, changePct } = quoteDayChange(q);
 
-  // Price + flash on movement
+  // Price color vs previous close + flash on tick movement
   els.price.textContent = "$" + fmtMoney(price);
+  els.price.classList.remove("up", "down", "flat", "flash-up", "flash-down");
+  if (!Number.isFinite(change)) {
+    els.price.classList.add("flat");
+  } else if (change > 0) {
+    els.price.classList.add("up");
+  } else if (change < 0) {
+    els.price.classList.add("down");
+  } else {
+    els.price.classList.add("flat");
+  }
   if (Number.isFinite(lastPrice) && Number.isFinite(price) && price !== lastPrice) {
-    els.price.classList.remove("flash-up", "flash-down");
     void els.price.offsetWidth; // restart animation
     els.price.classList.add(price > lastPrice ? "flash-up" : "flash-down");
   }
