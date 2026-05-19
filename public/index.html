@@ -14,10 +14,39 @@
       href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./styles.css?v=5" />
+    <!-- Discourage TV/console browsers from caching aggressively. These hints
+         are non-binding but most browsers honor them on first load. -->
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
   </head>
   <body>
     <canvas id="bg"></canvas>
+
+    <button
+      id="settingsBtn"
+      class="settings-btn"
+      type="button"
+      aria-label="Settings"
+      aria-expanded="false"
+      aria-controls="settingsPanel"
+    >
+      <svg class="settings-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <path
+          fill="currentColor"
+          d="M12 15.5A3.5 3.5 0 1 0 12 8.5a3.5 3.5 0 0 0 0 7Zm8.94-2.06a1.5 1.5 0 0 0 .3-1.65l-1.12-1.94a1.5 1.5 0 0 0-1.4-.73h-.22a6.5 6.5 0 0 0-.64-1.54l.13-.22a1.5 1.5 0 0 0-.12-1.65L16.7 3.3a1.5 1.5 0 0 0-1.65-.3l-.22.13a6.5 6.5 0 0 0-1.54-.64V2.27a1.5 1.5 0 0 0-.73-1.4L11.82.75a1.5 1.5 0 0 0-1.65 0L8.23 1.87a1.5 1.5 0 0 0-.73 1.4v.22a6.5 6.5 0 0 0-1.54.64l-.22-.13a1.5 1.5 0 0 0-1.65.12L2.15 5.04a1.5 1.5 0 0 0-.3 1.65l.13.22a6.5 6.5 0 0 0-.64 1.54H1.42a1.5 1.5 0 0 0-1.4.73L.9 10.89a1.5 1.5 0 0 0 0 1.65l1.12 1.94c.33.57.93.9 1.55.73h.22c.2.54.4 1.05.64 1.54l-.13.22a1.5 1.5 0 0 0 .12 1.65l1.12 1.94a1.5 1.5 0 0 0 1.65.3l.22-.13c.49.24 1 .44 1.54.64v.22c.07.57.4 1.07.97 1.24l1.94 1.12a1.5 1.5 0 0 0 1.65 0l1.94-1.12a1.5 1.5 0 0 0 .73-1.4v-.22c.54-.2 1.05-.4 1.54-.64l.22.13a1.5 1.5 0 0 0 1.65-.3l1.12-1.94a1.5 1.5 0 0 0 .12-1.65l-.13-.22a6.5 6.5 0 0 0 .64-1.54h.22c.57-.17.97-.67 1.04-1.24v-.22Z"
+        />
+      </svg>
+    </button>
+
+    <div id="settingsPanel" class="settings-panel hidden" role="dialog" aria-label="Settings" hidden>
+      <label class="settings-row">
+        <input type="checkbox" id="debugToggle" />
+        <span class="settings-toggle-ui" aria-hidden="true"></span>
+        <span class="settings-label">Debug panel</span>
+      </label>
+    </div>
 
     <main class="stage">
       <!-- Top bar: weather (left) + ROP (center) + clock (right) -->
@@ -68,7 +97,9 @@
       </footer>
     </main>
 
-    <script src="./config.js"></script>
-    <script src="./app.js" defer></script>
+    <div id="diag" class="diag hidden"></div>
+
+    <script src="./config.js?v=5"></script>
+    <script src="./app.js?v=5" defer></script>
   </body>
 </html>

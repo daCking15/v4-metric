@@ -52,6 +52,11 @@ body.idle,
 body.idle * {
   cursor: none !important;
 }
+body.idle .settings-btn,
+body.idle .settings-panel,
+body.idle .settings-panel * {
+  cursor: pointer !important;
+}
 
 #bg {
   position: fixed;
@@ -174,6 +179,146 @@ body.idle * {
 .state-dot.open      { background: var(--up);   box-shadow: 0 0 14px var(--up-glow); }
 .state-dot.closed    { background: var(--ink-faint); box-shadow: none; }
 .state-dot.pre-post  { background: #f5b94a; box-shadow: 0 0 14px rgba(245,185,74,0.45); }
+
+/* ---------- Settings (top-left) ---------- */
+.settings-btn {
+  position: fixed;
+  top: var(--safe-pad);
+  left: var(--safe-pad);
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: clamp(44px, 4.5vmin, 56px);
+  height: clamp(44px, 4.5vmin, 56px);
+  padding: 0;
+  border: 1px solid var(--card-border);
+  border-radius: 12px;
+  background: rgba(10, 15, 28, 0.55);
+  color: var(--ink-dim);
+  cursor: pointer;
+  transition:
+    color 0.2s ease,
+    border-color 0.2s ease,
+    background 0.2s ease,
+    box-shadow 0.2s ease;
+}
+.settings-btn:hover,
+.settings-btn:focus-visible {
+  color: var(--accent);
+  border-color: rgba(122, 162, 255, 0.35);
+  background: rgba(10, 15, 28, 0.82);
+  box-shadow: 0 0 20px rgba(122, 162, 255, 0.15);
+  outline: none;
+}
+.settings-btn[aria-expanded="true"] {
+  color: var(--accent);
+  border-color: rgba(122, 162, 255, 0.45);
+  background: rgba(10, 15, 28, 0.9);
+}
+.settings-icon {
+  width: clamp(22px, 2.2vmin, 28px);
+  height: clamp(22px, 2.2vmin, 28px);
+}
+
+.settings-panel {
+  position: fixed;
+  top: calc(var(--safe-pad) + clamp(52px, 5.5vmin, 68px));
+  left: var(--safe-pad);
+  z-index: 60;
+  min-width: clamp(220px, 22vw, 300px);
+  padding: clamp(14px, 1.5vmin, 20px) clamp(16px, 1.6vmin, 22px);
+  border: 1px solid var(--card-border);
+  border-radius: 12px;
+  background: rgba(8, 12, 22, 0.94);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+}
+.settings-panel.hidden {
+  display: none;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  cursor: pointer;
+  user-select: none;
+}
+.settings-row input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+.settings-label {
+  font-size: var(--top-sub);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink);
+}
+.settings-toggle-ui {
+  flex-shrink: 0;
+  width: 44px;
+  height: 24px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid var(--card-border);
+  position: relative;
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+.settings-toggle-ui::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--ink-dim);
+  transition:
+    transform 0.2s ease,
+    background 0.2s ease;
+}
+.settings-row input:checked + .settings-toggle-ui {
+  background: rgba(122, 162, 255, 0.25);
+  border-color: rgba(122, 162, 255, 0.45);
+}
+.settings-row input:checked + .settings-toggle-ui::after {
+  transform: translateX(20px);
+  background: var(--accent);
+}
+
+/* ---------- On-screen diagnostics overlay ----------
+   Sits above the news ticker, bottom-right corner. Shows the current status
+   of each fetch and any unhandled JS errors. Auto-fades once everything is
+   healthy for a few seconds. Useful on devices without devtools (Xbox/smart
+   TV browsers). */
+.diag {
+  position: fixed;
+  bottom: calc(var(--safe-pad, 48px) + clamp(56px, 6vmin, 84px));
+  right: clamp(16px, 2vmin, 32px);
+  z-index: 50;
+  font-family: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
+  font-size: clamp(11px, 0.95vw, 14px);
+  line-height: 1.4;
+  color: rgba(220, 230, 250, 0.85);
+  background: rgba(8, 12, 22, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  padding: 10px 14px;
+  white-space: pre;
+  pointer-events: none;
+  opacity: 0.92;
+  transition: opacity 0.6s ease;
+  max-width: min(560px, 90vw);
+  text-align: left;
+}
+.diag.hidden {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
 
 /* ---------- News ticker ---------- */
 .ticker {
@@ -337,6 +482,8 @@ body.idle * {
   background: transparent;
   border: none;
   padding: 0;
+  /* Leave room for the fixed settings button in the top-left corner. */
+  margin-left: calc(clamp(44px, 4.5vmin, 56px) + 14px);
 }
 
 .wx-icon {

@@ -8,6 +8,128 @@ const API_BASE = (
 ).replace(/\/$/, "");
 const api = (path) => `${API_BASE}${path}`;
 
+// ---------- Diagnostics (on-screen, since TV browsers have no devtools) ----------
+const DEBUG_STORAGE_KEY = "rop-screensaver:debugPanel";
+
+function loadDebugEnabled() {
+  try {
+    return localStorage.getItem(DEBUG_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function saveDebugEnabled(on) {
+  try {
+    localStorage.setItem(DEBUG_STORAGE_KEY, on ? "1" : "0");
+  } catch {
+    /* private mode / quota */
+  }
+}
+
+const diag = (() => {
+  const slots = { quote: "…", weather: "…", news: "…" };
+  const errors = [];
+  let debugEnabled = loadDebugEnabled();
+  const el = document.getElementById("diag");
+
+  function applyVisibility() {
+    if (!el) return;
+    if (!debugEnabled) {
+      el.classList.add("hidden");
+      return;
+    }
+    el.classList.remove("hidden");
+  }
+
+  function render() {
+    if (!el) return;
+    const lines = [
+      `Stock:   ${slots.quote}`,
+      `Weather: ${slots.weather}`,
+      `News:    ${slots.news}`,
+      `Build:   v5 · API: ${API_BASE || "(same-origin)"}`,
+    ];
+    if (errors.length) {
+      lines.push("");
+      lines.push("Recent errors:");
+      for (const e of errors.slice(-3)) lines.push(`· ${e}`);
+    }
+    el.textContent = lines.join("\n");
+    applyVisibility();
+  }
+
+  function set(slot, msg) {
+    slots[slot] = String(msg);
+    render();
+  }
+  function err(msg) {
+    const s = String(msg || "").slice(0, 90);
+    if (s) errors.push(s);
+    if (errors.length > 5) errors.splice(0, errors.length - 5);
+    render();
+  }
+
+  function setDebugEnabled(on) {
+    debugEnabled = !!on;
+    saveDebugEnabled(debugEnabled);
+    render();
+  }
+
+  window.addEventListener("error", (e) =>
+    err(`JS: ${e.message || (e.error && e.error.message) || "error"}`),
+  );
+  window.addEventListener("unhandledrejection", (e) =>
+    err(
+      `Promise: ${(e.reason && (e.reason.message || e.reason)) || "unhandled"}`,
+    ),
+  );
+
+  setInterval(render, 1000);
+  render();
+  return {
+    set,
+    err,
+    setDebugEnabled,
+    isDebugEnabled: () => debugEnabled,
+  };
+})();
+
+// ---------- Settings ----------
+function initSettings() {
+  const btn = document.getElementById("settingsBtn");
+  const panel = document.getElementById("settingsPanel");
+  const toggle = document.getElementById("debugToggle");
+  if (!btn || !panel || !toggle) return;
+
+  toggle.checked = diag.isDebugEnabled();
+
+  function setPanelOpen(open) {
+    panel.classList.toggle("hidden", !open);
+    panel.hidden = !open;
+    btn.setAttribute("aria-expanded", String(open));
+  }
+
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    setPanelOpen(panel.hidden);
+  });
+
+  panel.addEventListener("click", (e) => e.stopPropagation());
+
+  toggle.addEventListener("change", () => {
+    diag.setDebugEnabled(toggle.checked);
+  });
+
+  document.addEventListener("click", () => {
+    if (!panel.hidden) setPanelOpen(false);
+  });
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !panel.hidden) setPanelOpen(false);
+  });
+}
+
 // ---------- DOM ----------
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -103,12 +225,17 @@ let lastPrice = null;
 
 async function fetchQuote() {
   try {
+    diag.set("quote", "fetching…");
     const r = await fetch(api("/api/quote?symbol=ROP&range=1d&interval=2m"));
-    if (!r.ok) return;
+    if (!r.ok) {
+      diag.set("quote", `HTTP ${r.status}`);
+      return;
+    }
     const q = await r.json();
     renderQuote(q);
-  } catch {
-    // Silent: keep showing last known values. The next tick will retry.
+    diag.set("quote", `OK @ ${new Date().toLocaleTimeString()}`);
+  } catch (err) {
+    diag.set("quote", `FAIL: ${(err && err.message) || err}`);
   }
 }
 
@@ -520,6 +647,7 @@ const WX_CODES = {
 
 async function fetchWeather() {
   try {
+    diag.set("weather", "fetching…");
     const url =
       "https://api.open-meteo.com/v1/forecast" +
       "?latitude=39.7392&longitude=-104.9903" +
@@ -532,10 +660,11 @@ async function fetchWeather() {
     const [desc, icon] = WX_CODES[c.weather_code] || ["—", "·"];
     els.wxTemp.textContent = `${Math.round(c.temperature_2m)}°`;
     els.wxIcon.textContent = icon;
-    els.wxDesc.textContent =
-      `${desc} · feels ${Math.round(c.apparent_temperature)}° · wind ${Math.round(c.wind_speed_10m)} mph`;
+    els.wxDesc.textContent = `${desc} · feels ${Math.round(c.apparent_temperature)}° · wind ${Math.round(c.wind_speed_10m)} mph`;
+    diag.set("weather", `OK @ ${new Date().toLocaleTimeString()}`);
   } catch (err) {
     els.wxDesc.textContent = "Weather offline";
+    diag.set("weather", `FAIL: ${(err && err.message) || err}`);
   }
 }
 
@@ -659,16 +788,25 @@ function renderNews(items) {
 
 async function fetchNews() {
   try {
+    diag.set("news", "fetching…");
     const r = await fetch(api("/api/news"));
-    if (!r.ok) return;
+    if (!r.ok) {
+      diag.set("news", `HTTP ${r.status}`);
+      return;
+    }
     const json = await r.json();
     renderNews(json.items || []);
-  } catch {
-    /* leave previous ticker contents on error */
+    diag.set(
+      "news",
+      `OK (${(json.items || []).length} items) @ ${new Date().toLocaleTimeString()}`,
+    );
+  } catch (err) {
+    diag.set("news", `FAIL: ${(err && err.message) || err}`);
   }
 }
 
 // ---------- Boot ----------
+initSettings();
 fetchQuote();
 fetchWeather();
 fetchNews();
@@ -683,8 +821,10 @@ window.addEventListener("resize", () => {
   resizeT = setTimeout(fetchQuote, 200);
 });
 
-// Click anywhere to force a refresh (handy on the TV remote / browser)
-document.body.addEventListener("click", () => {
+// Click anywhere to force a refresh (handy on the TV remote / browser).
+// Ignore clicks on settings controls.
+document.body.addEventListener("click", (e) => {
+  if (e.target.closest(".settings-btn, .settings-panel")) return;
   fetchQuote();
   fetchWeather();
 });
