@@ -118,3 +118,5 @@ To swap the tracked symbol or city, edit `public/app.js` and `worker.js` (the sy
 Pair with `caffeinate -d` to keep the display awake.
 
 For TVs that have a built-in browser (Apple TV, Fire TV), just open the GitHub Pages URL.
+
+Test
