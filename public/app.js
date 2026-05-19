@@ -606,8 +606,7 @@ function layoutChartEventLabels(ctx, events, options) {
     }
   }
 
-  for (const p of placed) {
-    // lblY = top of painted glyphs (not em-box top — avoids extra gap above cap height).
+  const applyLabelRow = (p) => {
     if (labelsAbove) {
       p.lblY = Math.max(labelMinY, baseY - p.inkHeight - p.row * rowStep);
     } else {
@@ -616,8 +615,20 @@ function layoutChartEventLabels(ctx, events, options) {
     p.drawY = p.lblY + p.inkAscent;
     p.maskTop = p.lblY - CHART_LABEL_MASK_PAD_Y;
     p.maskBottom = p.lblY + p.inkHeight + CHART_LABEL_MASK_PAD_Y;
-    // Above chart: guides run from bottom of label down to the marker.
     p.lineEndY = labelsAbove ? p.maskBottom : p.lblY + p.inkHeight / 2;
+  };
+
+  for (const p of placed) applyLabelRow(p);
+
+  // CLOSE sits left of OPEN; when rows stagger, keep CLOSE above OPEN.
+  const closeLbl = placed.find((p) => p.ev.atRefPrice);
+  const openLbl = placed.find((p) => p.ev.isOpen);
+  if (closeLbl && openLbl && closeLbl.row < openLbl.row) {
+    const r = closeLbl.row;
+    closeLbl.row = openLbl.row;
+    openLbl.row = r;
+    applyLabelRow(closeLbl);
+    applyLabelRow(openLbl);
   }
 
   ctx.restore();
@@ -823,7 +834,7 @@ const diag = (() => {
       `Stock:   ${slots.quote}`,
       `Weather: ${slots.weather}`,
       `News:    ${slots.news}`,
-      `Build:   v57 · ${liteMode ? "lite" : "full"}${isDebugUrl() ? " · /debug" : ""} · API: ${API_BASE || "(same-origin)"}`,
+      `Build:   v58 · ${liteMode ? "lite" : "full"}${isDebugUrl() ? " · /debug" : ""} · API: ${API_BASE || "(same-origin)"}`,
     ];
     if (errors.length) {
       lines.push("");
