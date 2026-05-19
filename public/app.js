@@ -115,12 +115,16 @@ const CHART_LABEL_ROW_STEP = 32;
 const CHART_LABEL_PAD_LEFT = 8;
 /** Equal gap above/below label ink where guides are hidden. */
 const CHART_LABEL_MASK_PAD_Y = 5;
-/** Top band for OPEN / HIGH / LOW labels (above the plot). */
-const CHART_EVENT_BAND_H = 40;
-/** Gap between the plot top edge and the bottom of the event labels. */
-const CHART_LABEL_GAP_ABOVE_PLOT = 4;
+/** Top band for OPEN / HIGH / LOW / CLOSE labels (above the plot). */
+const CHART_EVENT_BAND_H = 72;
+/** Gap between the plot top edge and the bottom of the nearest label row. */
+const CHART_LABEL_GAP_ABOVE_PLOT = 6;
+/** Minimum Y for label tops (keeps text off the canvas edge). */
+const CHART_LABEL_TOP_INSET = 8;
 /** Horizontal inset so edge markers (OPEN ring, end dot) are not clipped. */
 const CHART_PLOT_INSET_X = 12;
+/** Extra time-axis space to the left for the CLOSE (prev session) marker. */
+const CHART_PREV_SLOT_MS = 22 * 60_000;
 /** Minimum width of the horizontal tick on event guide lines. */
 const CHART_GUIDE_CAP_W = 7;
 /** Gap between the horizontal tick end and the label text. */
@@ -131,7 +135,7 @@ const CHART_TIME_TICK_LEN = 14;
 const CHART_TIME_LABEL_GAP = 12;
 
 function chartPlotLayout(h, { lite = false } = {}) {
-  const eventBandH = lite ? 36 : CHART_EVENT_BAND_H;
+  const eventBandH = lite ? 56 : CHART_EVENT_BAND_H;
   const chartTop = eventBandH;
   const plotH = Math.max(40, h - eventBandH - CHART_TIME_AXIS_H);
   const chartBottom = chartTop + plotH;
@@ -141,6 +145,7 @@ function chartPlotLayout(h, { lite = false } = {}) {
     chartBottom,
     // Bottom edge of row-0 label ink (labels sit just above the plot).
     labelBaseY: chartTop - CHART_LABEL_GAP_ABOVE_PLOT,
+    labelMinY: CHART_LABEL_TOP_INSET,
     timeTickLen: CHART_TIME_TICK_LEN,
     hourLblY: chartBottom + CHART_TIME_TICK_LEN + CHART_TIME_LABEL_GAP,
   };
@@ -343,18 +348,23 @@ function strokePlottedSeriesVsOpen(ctx, pts, px, py, openPrice, { glow = false }
   });
 }
 
-function priceVsOpenColor(price, openPrice, fallbackUp) {
-  if (Number.isFinite(openPrice) && Number.isFinite(price)) {
-    return price >= openPrice ? CHART_LINE_GREEN : CHART_LINE_RED;
+function priceVsRefColor(price, refPrice, fallbackUp) {
+  if (Number.isFinite(refPrice) && Number.isFinite(price)) {
+    return price >= refPrice ? CHART_LINE_GREEN : CHART_LINE_RED;
   }
   return fallbackUp ? CHART_LINE_GREEN : CHART_LINE_RED;
 }
 
+/** Price level used to color the line green/red (prev close, else session open). */
+function chartLineColorRef(openPrice, prevClose) {
+  return Number.isFinite(prevClose) ? prevClose : openPrice;
+}
+
 /** Area under the line: subtle day fade by default; optional green/red vs open. */
-function drawChartSeriesFill(ctx, pts, px, py, chartH, { up, gradient, openPrice }) {
+function drawChartSeriesFill(ctx, pts, px, py, chartH, { up, gradient, refPrice }) {
   if (pts.length < 2) return;
-  if (chartFillVsOpen && Number.isFinite(openPrice)) {
-    fillPlottedSeriesVsOpen(ctx, pts, px, py, openPrice, chartH);
+  if (chartFillVsOpen && Number.isFinite(refPrice)) {
+    fillPlottedSeriesVsOpen(ctx, pts, px, py, refPrice, chartH);
     return;
   }
   const fillTop = up ? "rgba(46,224,122,0.22)" : "rgba(255,84,112,0.22)";
@@ -383,6 +393,45 @@ function chartSeriesWithOpenAnchor(pts, marketOpen, openPrice) {
   return [head, ...pts];
 }
 
+function chartPrevCloseSlotTime(marketOpen) {
+  return marketOpen - CHART_PREV_SLOT_MS;
+}
+
+function chartTimeAxisMin(marketOpen, hasPrevClose) {
+  return hasPrevClose ? chartPrevCloseSlotTime(marketOpen) : marketOpen;
+}
+
+/** Prior NYSE session date label (e.g. 5/18) for the time axis. */
+function previousSessionLabelDate(marketOpenMs) {
+  let t = marketOpenMs - 86_400_000;
+  for (let i = 0; i < 5; i++) {
+    const wd = new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/New_York",
+      weekday: "short",
+    }).format(new Date(t));
+    if (wd !== "Sat" && wd !== "Sun") break;
+    t -= 86_400_000;
+  }
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    month: "numeric",
+    day: "numeric",
+  }).format(new Date(t));
+}
+
+function strokeChartReferenceLine(ctx, price, py, x0, x1) {
+  if (!Number.isFinite(price)) return;
+  ctx.save();
+  ctx.strokeStyle = "rgba(160, 180, 210, 0.22)";
+  ctx.setLineDash([4, 6]);
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(x0, py(price));
+  ctx.lineTo(x1, py(price));
+  ctx.stroke();
+  ctx.restore();
+}
+
 /**
  * Position OPEN/HIGH/LOW labels beside the guide (X + pad), stagger rows on
  * overlap, and compute how far each guide line extends (lower rows run longer).
@@ -399,6 +448,7 @@ function layoutChartEventLabels(ctx, events, options) {
     minLabelX = 0,
     maxLabelRight = Infinity,
     labelPadLeft = CHART_LABEL_PAD_LEFT,
+    labelMinY = CHART_LABEL_TOP_INSET,
   } = options;
 
   ctx.save();
@@ -456,7 +506,7 @@ function layoutChartEventLabels(ctx, events, options) {
   for (const p of placed) {
     // lblY = top of painted glyphs (not em-box top — avoids extra gap above cap height).
     if (labelsAbove) {
-      p.lblY = baseY - p.inkHeight - p.row * rowStep;
+      p.lblY = Math.max(labelMinY, baseY - p.inkHeight - p.row * rowStep);
     } else {
       p.lblY = baseY + p.row * rowStep;
     }
@@ -478,7 +528,9 @@ function drawChartEventGuidesAndLabels(
   { plottedPts, ringRadius = 5, ringWidth = 2, glow = false, labelsAbove = true },
 ) {
   const markerY = (p) =>
-    chartYOnPlottedSeries(plottedPts, p.ev.t, py) ?? py(p.ev.price);
+    p.ev.atRefPrice
+      ? py(p.ev.price)
+      : chartYOnPlottedSeries(plottedPts, p.ev.t, py) ?? py(p.ev.price);
 
   ctx.setLineDash([3, 4]);
   ctx.lineWidth = 1;
@@ -554,16 +606,36 @@ function findExtremePoint(points, mode, officialPrice) {
   return points.reduce(better, points[0]);
 }
 
-function buildChartEvents({ points, openTime, openPrice, highPrice, lowPrice, currentPrice }) {
+function buildChartEvents({
+  points,
+  openTime,
+  openPrice,
+  prevClose,
+  highPrice,
+  lowPrice,
+  currentPrice,
+}) {
   const events = [];
   const sameish = (a, b) => Math.abs(a - b) < 0.005;
+  if (Number.isFinite(prevClose)) {
+    events.push({
+      t: chartPrevCloseSlotTime(openTime),
+      price: prevClose,
+      atRefPrice: true,
+      color: "rgba(180, 198, 230, 0.95)",
+      lineColor: "rgba(160, 180, 210, 0.55)",
+      label: `CLOSE $${prevClose.toFixed(2)}`,
+    });
+  }
   if (Number.isFinite(openPrice)) {
+    const openUp =
+      Number.isFinite(prevClose) ? openPrice >= prevClose : true;
     events.push({
       t: openTime,
       price: openPrice,
       isOpen: true,
-      color: "rgba(220, 230, 250, 0.95)",
-      lineColor: "rgba(255,255,255,0.5)",
+      color: openUp ? "#2ee07a" : "#ff5470",
+      lineColor: openUp ? "rgba(46,224,122,0.6)" : "rgba(255,84,112,0.6)",
       label: `OPEN $${openPrice.toFixed(2)}`,
     });
   }
@@ -648,7 +720,7 @@ const diag = (() => {
       `Stock:   ${slots.quote}`,
       `Weather: ${slots.weather}`,
       `News:    ${slots.news}`,
-      `Build:   v42 · ${liteMode ? "lite" : "full"}${isDebugUrl() ? " · /debug" : ""} · API: ${API_BASE || "(same-origin)"}`,
+      `Build:   v50 · ${liteMode ? "lite" : "full"}${isDebugUrl() ? " · /debug" : ""} · API: ${API_BASE || "(same-origin)"}`,
     ];
     if (errors.length) {
       lines.push("");
@@ -777,6 +849,7 @@ const els = {
   changePct: $("changePct"),
   changeArrow: $("changeArrow"),
   changeRow: document.querySelector(".change-row"),
+  prevClose: $("prevClose"),
   tickerTrack: $("tickerTrack"),
   wxIcon: $("wxIcon"),
   wxTemp: $("wxTemp"),
@@ -860,12 +933,10 @@ function renderMarketState() {
 // ---------- Stock ----------
 let lastPrice = null;
 
-/** Change vs today's open when available; otherwise vs previous close. */
+/** Change vs previous session close. */
 function quoteDayChange(q) {
   const price = q?.price;
-  const open = q?.open;
-  const prevClose = q?.previousClose;
-  const ref = Number.isFinite(open) ? open : prevClose;
+  const ref = q?.previousClose;
   if (!Number.isFinite(price) || !Number.isFinite(ref)) {
     return { change: NaN, changePct: NaN, ref: NaN };
   }
@@ -923,6 +994,13 @@ function renderQuote(q) {
   } else {
     els.changeRow.classList.add("flat");
     els.changeArrow.textContent = "—";
+  }
+
+  if (els.prevClose) {
+    const pc = q.previousClose;
+    els.prevClose.textContent = Number.isFinite(pc)
+      ? `Previous close $${fmtMoney(pc)}`
+      : "Previous close unavailable";
   }
 
   scheduleSparkDraw(q.series, change, q);
@@ -1006,8 +1084,8 @@ function denverDateParts(ms) {
   return { y: +p.year, mo: +p.month, d: +p.day };
 }
 
-/** Denver hour labels: market open (e.g. 7:30 AM) + each hour after until close. */
-function chartDenverHourTicks(marketOpen, marketClose) {
+/** Denver hour labels: prior date (e.g. 5/18), open (7:30 AM), then hourly … close. */
+function chartDenverHourTicks(marketOpen, marketClose, { showPrevDate = false } = {}) {
   const { y, mo, d } = denverDateParts(marketOpen);
   const hourFmt = new Intl.DateTimeFormat("en-US", {
     timeZone: DENVER_TZ,
@@ -1028,9 +1106,14 @@ function chartDenverHourTicks(marketOpen, marketClose) {
   const openHour = parseInt(hourFmt.format(new Date(marketOpen)), 10);
   const closeHour = parseInt(hourFmt.format(new Date(marketClose)), 10);
 
-  const ticks = [
-    { t: marketOpen, label: openTimeFmt.format(new Date(marketOpen)) },
-  ];
+  const ticks = [];
+  if (showPrevDate) {
+    ticks.push({
+      t: chartPrevCloseSlotTime(marketOpen),
+      label: previousSessionLabelDate(marketOpen),
+    });
+  }
+  ticks.push({ t: marketOpen, label: openTimeFmt.format(new Date(marketOpen)) });
   for (let h = openHour + 1; h <= closeHour; h++) {
     const t = msForDenverLocal(y, mo, d, h, 0);
     if (t > marketClose + 30 * 60_000) break;
@@ -1055,12 +1138,13 @@ function drawSparkLite(series, change, quote) {
   ctx.clearRect(0, 0, w, h);
 
   const EVENT_FONT = "600 16px 'Space Grotesk', system-ui, sans-serif";
-  const { chartTop, plotH, chartBottom, labelBaseY, hourLblY } = chartPlotLayout(h, {
+  const { chartTop, plotH, chartBottom, labelBaseY, labelMinY, hourLblY } = chartPlotLayout(h, {
     lite: true,
   });
   const { open: openTime, close: closeTime } = tradingDayBounds();
-  const xMin = openTime;
+  const prevClose = Number.isFinite(quote?.previousClose) ? quote.previousClose : null;
   const xMax = closeTime;
+  const xMin = chartTimeAxisMin(openTime, Number.isFinite(prevClose));
   const CHART_PAD = Math.max(56, Math.min(96, w * 0.06));
 
   let pts = (series || [])
@@ -1072,7 +1156,7 @@ function drawSparkLite(series, change, quote) {
   pts = downsampleSeries(pts, 72);
 
   const openPrice = openPriceEarly;
-  if (pts.length === 0 && !Number.isFinite(openPrice)) return;
+  if (pts.length === 0 && !Number.isFinite(openPrice) && !Number.isFinite(prevClose)) return;
 
   const highPrice = Number.isFinite(quote?.dayHigh)
     ? quote.dayHigh
@@ -1086,7 +1170,9 @@ function drawSparkLite(series, change, quote) {
       : openPrice;
   const currentPrice = ptsFull.at(-1)?.c ?? null;
 
-  const refs = [openPrice, highPrice, lowPrice, ...ptsFull.map((p) => p.c)].filter(Number.isFinite);
+  const refs = [openPrice, prevClose, highPrice, lowPrice, ...ptsFull.map((p) => p.c)].filter(
+    Number.isFinite,
+  );
   let yMin = Math.min(...refs);
   let yMax = Math.max(...refs);
   if (yMin === yMax) {
@@ -1097,42 +1183,38 @@ function drawSparkLite(series, change, quote) {
   yMin -= yPad;
   yMax += yPad;
 
-  const plotW = w - CHART_PAD * 2;
-  const px = (t) => CHART_PAD + ((t - xMin) / Math.max(1, xMax - xMin)) * plotW;
+  const plotX0 = CHART_PAD;
+  const plotX1 = w - CHART_PAD;
+  const plotW = Math.max(1, plotX1 - plotX0);
+  const px = (t) => plotX0 + ((t - xMin) / Math.max(1, xMax - xMin)) * plotW;
   const py = (c) =>
     chartBottom - ((c - yMin) / Math.max(0.0001, yMax - yMin)) * plotH;
-  const clampX = (x) => Math.max(CHART_PAD, Math.min(w - CHART_PAD, x));
+  const clampX = (x) => Math.max(plotX0, Math.min(plotX1, x));
 
   const up = change >= 0;
+  const lineRef = chartLineColorRef(openPrice, prevClose);
 
   ctx.strokeStyle = "rgba(255,255,255,0.1)";
   ctx.beginPath();
-  ctx.moveTo(CHART_PAD, chartBottom);
-  ctx.lineTo(w - CHART_PAD, chartBottom);
+  ctx.moveTo(plotX0, chartBottom);
+  ctx.lineTo(plotX1, chartBottom);
   ctx.stroke();
 
-  if (Number.isFinite(openPrice)) {
-    ctx.strokeStyle = "rgba(255,255,255,0.14)";
-    ctx.setLineDash([4, 6]);
-    ctx.beginPath();
-    ctx.moveTo(CHART_PAD, py(openPrice));
-    ctx.lineTo(w - CHART_PAD, py(openPrice));
-    ctx.stroke();
-    ctx.setLineDash([]);
-  }
+  strokeChartReferenceLine(ctx, prevClose, py, plotX0, plotX1);
 
   if (pts.length >= 2) {
     ctx.lineWidth = 2;
     ctx.lineJoin = "round";
     ctx.lineCap = "round";
-    drawChartSeriesFill(ctx, pts, px, py, chartBottom, { up, gradient: false, openPrice });
-    strokePlottedSeriesVsOpen(ctx, pts, px, py, openPrice);
+    drawChartSeriesFill(ctx, pts, px, py, chartBottom, { up, gradient: false, refPrice: lineRef });
+    strokePlottedSeriesVsOpen(ctx, pts, px, py, lineRef);
   }
 
   const events = buildChartEvents({
     points: ptsFull,
     openTime,
     openPrice,
+    prevClose,
     highPrice,
     lowPrice,
     currentPrice,
@@ -1142,9 +1224,10 @@ function drawSparkLite(series, change, quote) {
     font: EVENT_FONT,
     px,
     baseY: labelBaseY,
+    labelMinY,
     labelsAbove: true,
-    minLabelX: CHART_PAD,
-    maxLabelRight: w - CHART_PAD,
+    minLabelX: plotX0 + 2,
+    maxLabelRight: plotX1,
   });
 
   ctx.font = EVENT_FONT;
@@ -1157,7 +1240,7 @@ function drawSparkLite(series, change, quote) {
 
   if (pts.length) {
     const lp = pts[pts.length - 1];
-    ctx.fillStyle = priceVsOpenColor(lp.c, openPrice, up);
+    ctx.fillStyle = priceVsRefColor(lp.c, lineRef, up);
     ctx.beginPath();
     ctx.arc(clampX(px(lp.t)), py(lp.c), 5, 0, Math.PI * 2);
     ctx.fill();
@@ -1180,13 +1263,14 @@ function drawSpark(series, change, quote) {
   // OPEN/HIGH/LOW above the plot; hour labels tight under the plot bottom.
   const EVENT_FONT = "600 18px 'Space Grotesk', system-ui, sans-serif";
   const HOUR_FONT = "500 15px 'Space Grotesk', system-ui, sans-serif";
-  const { chartTop, plotH, chartBottom, labelBaseY, hourLblY, timeTickLen } =
+  const { chartTop, plotH, chartBottom, labelBaseY, labelMinY, hourLblY, timeTickLen } =
     chartPlotLayout(h);
 
-  // X axis: NYSE 9:30–16:00 ET (7:30 AM–2:00 PM Denver during DST).
+  // X axis: prior date slot + NYSE 9:30–16:00 ET (Denver hour labels).
   const { open: marketOpen, close: marketClose } = tradingDayBounds();
-  const xMin = marketOpen;
+  const prevClose = Number.isFinite(quote?.previousClose) ? quote.previousClose : null;
   const xMax = marketClose;
+  const xMin = chartTimeAxisMin(marketOpen, Number.isFinite(prevClose));
 
   let pts = series
     .filter(
@@ -1201,7 +1285,7 @@ function drawSpark(series, change, quote) {
     ? quote.open
     : pts[0]?.c ?? null;
   pts = chartSeriesWithOpenAnchor(pts, marketOpen, openPrice);
-  if (pts.length === 0 && !Number.isFinite(openPrice)) return;
+  if (pts.length === 0 && !Number.isFinite(openPrice) && !Number.isFinite(prevClose)) return;
 
   const ys = pts.map((p) => p.c);
   const highPrice = Number.isFinite(quote?.dayHigh)
@@ -1216,7 +1300,7 @@ function drawSpark(series, change, quote) {
       : openPrice;
   const currentPrice = pts.at(-1)?.c ?? null;
 
-  const refs = [openPrice, highPrice, lowPrice, ...ys].filter(Number.isFinite);
+  const refs = [openPrice, prevClose, highPrice, lowPrice, ...ys].filter(Number.isFinite);
   let yMin = Math.min(...refs);
   let yMax = Math.max(...refs);
   if (yMin === yMax) {
@@ -1235,12 +1319,15 @@ function drawSpark(series, change, quote) {
     chartBottom - ((c - yMin) / Math.max(0.0001, yMax - yMin)) * plotH;
 
   const up = change >= 0;
+  const lineRef = chartLineColorRef(openPrice, prevClose);
 
   // ---- Hourly gridlines + axis ticks (Denver): open at 7:30 AM, then 8 AM … close.
   ctx.save();
   ctx.font = HOUR_FONT;
   ctx.textBaseline = "top";
-  for (const tick of chartDenverHourTicks(marketOpen, marketClose)) {
+  for (const tick of chartDenverHourTicks(marketOpen, marketClose, {
+    showPrevDate: Number.isFinite(prevClose),
+  })) {
     const X = px(tick.t);
     if (X < -8 || X > w + 8) continue;
     ctx.strokeStyle = "rgba(255,255,255,0.04)";
@@ -1270,28 +1357,16 @@ function drawSpark(series, change, quote) {
   ctx.stroke();
   ctx.restore();
 
-  // ---- Faint open reference line (no label — label is in the axis strip)
-  if (Number.isFinite(openPrice)) {
-    ctx.save();
-    ctx.strokeStyle = "rgba(255,255,255,0.14)";
-    ctx.setLineDash([4, 6]);
-    ctx.lineWidth = 1;
-    const Y = py(openPrice);
-    ctx.beginPath();
-    ctx.moveTo(plotX0, Y);
-    ctx.lineTo(plotX1, Y);
-    ctx.stroke();
-    ctx.restore();
-  }
+  strokeChartReferenceLine(ctx, prevClose, py, plotX0, plotX1);
 
-  // ---- Filled area + glowing line (green above open, red below)
+  // ---- Filled area + glowing line (green above prev close, red below)
   if (pts.length >= 2) {
     ctx.save();
     ctx.lineWidth = 2.5;
     ctx.lineJoin = "round";
     ctx.lineCap = "round";
-    drawChartSeriesFill(ctx, pts, px, py, chartBottom, { up, gradient: true, openPrice });
-    strokePlottedSeriesVsOpen(ctx, pts, px, py, openPrice, { glow: true });
+    drawChartSeriesFill(ctx, pts, px, py, chartBottom, { up, gradient: true, refPrice: lineRef });
+    strokePlottedSeriesVsOpen(ctx, pts, px, py, lineRef, { glow: true });
     ctx.restore();
   }
 
@@ -1300,6 +1375,7 @@ function drawSpark(series, change, quote) {
     points: pts,
     openTime: marketOpen,
     openPrice,
+    prevClose,
     highPrice,
     lowPrice,
     currentPrice,
@@ -1309,6 +1385,7 @@ function drawSpark(series, change, quote) {
     font: EVENT_FONT,
     px,
     baseY: labelBaseY,
+    labelMinY,
     labelsAbove: true,
     minLabelX: plotX0 + 2,
     maxLabelRight: plotX1,
@@ -1326,7 +1403,7 @@ function drawSpark(series, change, quote) {
   // ---- Current price end-dot
   if (pts.length) {
     const lp = pts[pts.length - 1];
-    const dotColor = priceVsOpenColor(lp.c, openPrice, up);
+    const dotColor = priceVsRefColor(lp.c, lineRef, up);
     const dotGlow =
       dotColor === CHART_LINE_GREEN ? CHART_GLOW_GREEN : CHART_GLOW_RED;
     ctx.save();

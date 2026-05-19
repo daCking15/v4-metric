@@ -566,13 +566,36 @@ html.lite .ticker-track {
   font-size: 0.85em;
 }
 
-.spark {
-  width: min(100%, 1600px);
-  max-width: 100%;
-  height: clamp(200px, min(32vh, 36vmin), 480px);
+.hero-chart-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: clamp(14px, 2.2vw, 28px);
+  width: 100%;
+  max-width: min(100%, 1680px);
   margin-top: clamp(16px, 2vh, 36px);
+  min-width: 0;
+}
+
+.prev-close {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.spark {
+  flex: 1 1 auto;
+  width: 0;
+  min-width: 0;
+  max-width: 1600px;
+  height: clamp(200px, min(32vh, 36vmin), 480px);
   display: block;
-  flex-shrink: 1;
 }
 
 .weather {

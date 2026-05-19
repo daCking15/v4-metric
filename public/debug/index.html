@@ -16,7 +16,7 @@
       href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="styles.css?v=42" />
+    <link rel="stylesheet" href="styles.css?v=50" />
     <!-- Discourage TV/console browsers from caching aggressively. These hints
          are non-binding but most browsers honor them on first load. -->
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
@@ -52,7 +52,7 @@
       <label class="settings-row">
         <input type="checkbox" id="chartFillToggle" />
         <span class="settings-toggle-ui" aria-hidden="true"></span>
-        <span class="settings-label">Fill chart vs open</span>
+        <span class="settings-label">Fill chart vs prev close</span>
       </label>
       <div class="settings-field">
         <label class="settings-field-label" for="newsCountSelect">News headlines</label>
@@ -110,7 +110,10 @@
           <span id="change" class="change">—</span>
           <span id="changePct" class="change-pct">—</span>
         </div>
-        <canvas id="spark" class="spark"></canvas>
+        <div class="hero-chart-row">
+          <span id="prevClose" class="prev-close">Previous close</span>
+          <canvas id="spark" class="spark"></canvas>
+        </div>
       </section>
     </main>
 
@@ -123,7 +126,7 @@
 
     <div id="diag" class="diag hidden"></div>
 
-    <script src="config.js?v=42"></script>
-    <script src="app.js?v=42" defer></script>
+    <script src="config.js?v=50"></script>
+    <script src="app.js?v=50" defer></script>
   </body>
 </html>
