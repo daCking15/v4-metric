@@ -834,7 +834,7 @@ const diag = (() => {
       `Stock:   ${slots.quote}`,
       `Weather: ${slots.weather}`,
       `News:    ${slots.news}`,
-      `Build:   v58 · ${liteMode ? "lite" : "full"}${isDebugUrl() ? " · /debug" : ""} · API: ${API_BASE || "(same-origin)"}`,
+      `Build:   v60 · ${liteMode ? "lite" : "full"}${isDebugUrl() ? " · /debug" : ""} · API: ${API_BASE || "(same-origin)"}`,
     ];
     if (errors.length) {
       lines.push("");
@@ -1236,6 +1236,88 @@ function chartDenverHourTicks(marketOpen, marketClose, { showPrevDate = false } 
   return ticks;
 }
 
+/** Widen plot insets so centered time labels (5/18, 2 PM, …) are not clipped. */
+function chartHorizontalInsetsForTimeLabels(ctx, font, ticks, w, xMin, xMax) {
+  const base = CHART_PLOT_INSET_X;
+  const span = Math.max(1, xMax - xMin);
+  const margin = 6;
+  ctx.save();
+  ctx.font = font;
+  let insetL = base;
+  let insetR = base;
+  for (let pass = 0; pass < 4; pass++) {
+    const innerW = Math.max(1, w - insetL - insetR);
+    for (const tick of ticks) {
+      const half = ctx.measureText(tick.label).width / 2;
+      const x = insetL + ((tick.t - xMin) / span) * innerW;
+      if (x - half < margin) insetL = Math.max(insetL, half + margin);
+      if (x + half > w - margin) insetR = Math.max(insetR, w - x + half + margin);
+    }
+  }
+  ctx.restore();
+  return { insetL, insetR };
+}
+
+function chartTimeAxisLabelY(ctx, font, h, chartBottom, timeTickLen, labelGap) {
+  ctx.save();
+  ctx.font = font;
+  const m = ctx.measureText("8:88 AM");
+  const textH =
+    (m.actualBoundingBoxAscent ?? 12) + (m.actualBoundingBoxDescent ?? 4);
+  ctx.restore();
+  const preferred = chartBottom + timeTickLen + labelGap;
+  return Math.min(preferred, Math.max(chartBottom + timeTickLen + 2, h - 6 - textH));
+}
+
+function drawChartTimeAxis(ctx, opts) {
+  const {
+    w,
+    h,
+    chartTop,
+    chartBottom,
+    timeTickLen,
+    labelGap,
+    font,
+    ticks,
+    xMin,
+    xMax,
+    plotX0,
+    plotX1,
+  } = opts;
+  const plotW = Math.max(1, plotX1 - plotX0);
+  const px = (t) => plotX0 + ((t - xMin) / Math.max(1, xMax - xMin)) * plotW;
+  const labelY = chartTimeAxisLabelY(ctx, font, h, chartBottom, timeTickLen, labelGap);
+
+  ctx.save();
+  ctx.font = font;
+  ctx.textBaseline = "top";
+  for (const tick of ticks) {
+    const X = px(tick.t);
+    if (X < -8 || X > w + 8) continue;
+    ctx.strokeStyle = "rgba(255,255,255,0.04)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(X, chartTop);
+    ctx.lineTo(X, chartBottom);
+    ctx.stroke();
+    ctx.strokeStyle = "rgba(255,255,255,0.18)";
+    ctx.beginPath();
+    ctx.moveTo(X, chartBottom);
+    ctx.lineTo(X, chartBottom + timeTickLen);
+    ctx.stroke();
+    ctx.textAlign = "center";
+    ctx.fillStyle = "rgba(160, 180, 210, 0.55)";
+    ctx.fillText(tick.label, X, labelY);
+  }
+  ctx.strokeStyle = "rgba(255,255,255,0.1)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(plotX0, chartBottom);
+  ctx.lineTo(plotX1, chartBottom);
+  ctx.stroke();
+  ctx.restore();
+}
+
 // Lightweight chart for Performance mode — same OPEN/HIGH/LOW markers + vertical
 // guide lines as the full chart, without shadows or expensive compositing.
 function drawSparkLite(series, change, quote) {
@@ -1403,7 +1485,7 @@ function drawSpark(series, change, quote) {
   // OPEN/HIGH/LOW above the plot; hour labels tight under the plot bottom.
   const EVENT_FONT = "600 18px 'Space Grotesk', system-ui, sans-serif";
   const HOUR_FONT = "500 15px 'Space Grotesk', system-ui, sans-serif";
-  const { chartTop, plotH, chartBottom, labelBaseY, labelMinY, hourLblY, timeTickLen } =
+  const { chartTop, plotH, chartBottom, labelBaseY, labelMinY, timeTickLen } =
     chartPlotLayout(h);
 
   // X axis: prior date slot + NYSE 9:30–16:00 ET (Denver hour labels).
@@ -1472,8 +1554,19 @@ function drawSpark(series, change, quote) {
   yMin -= yPad;
   yMax += yPad;
 
-  const plotX0 = CHART_PLOT_INSET_X;
-  const plotX1 = w - CHART_PLOT_INSET_X;
+  const timeTicks = chartDenverHourTicks(marketOpen, marketClose, {
+    showPrevDate: Number.isFinite(prevClose),
+  });
+  const { insetL, insetR } = chartHorizontalInsetsForTimeLabels(
+    ctx,
+    HOUR_FONT,
+    timeTicks,
+    w,
+    xMin,
+    xMax,
+  );
+  const plotX0 = insetL;
+  const plotX1 = w - insetR;
   const plotW = Math.max(1, plotX1 - plotX0);
   const px = (t) => plotX0 + ((t - xMin) / Math.max(1, xMax - xMin)) * plotW;
   const py = (c) =>
@@ -1482,41 +1575,20 @@ function drawSpark(series, change, quote) {
   const up = change >= 0;
   const lineRef = chartLineColorRef(openPrice, prevClose);
 
-  // ---- Hourly gridlines + axis ticks (Denver): open at 7:30 AM, then 8 AM … close.
-  ctx.save();
-  ctx.font = HOUR_FONT;
-  ctx.textBaseline = "top";
-  for (const tick of chartDenverHourTicks(marketOpen, marketClose, {
-    showPrevDate: Number.isFinite(prevClose),
-  })) {
-    const X = px(tick.t);
-    if (X < -8 || X > w + 8) continue;
-    ctx.strokeStyle = "rgba(255,255,255,0.04)";
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(X, chartTop);
-    ctx.lineTo(X, chartBottom);
-    ctx.stroke();
-    ctx.strokeStyle = "rgba(255,255,255,0.18)";
-    ctx.beginPath();
-    ctx.moveTo(X, chartBottom);
-    ctx.lineTo(X, chartBottom + timeTickLen);
-    ctx.stroke();
-    let align = "center";
-    if (X < 24) align = "left";
-    else if (X > w - 24) align = "right";
-    ctx.textAlign = align;
-    ctx.fillStyle = "rgba(160, 180, 210, 0.55)";
-    ctx.fillText(tick.label, X, hourLblY);
-  }
-  // Axis baseline
-  ctx.strokeStyle = "rgba(255,255,255,0.1)";
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(plotX0, chartBottom);
-  ctx.lineTo(plotX1, chartBottom);
-  ctx.stroke();
-  ctx.restore();
+  drawChartTimeAxis(ctx, {
+    w,
+    h,
+    chartTop,
+    chartBottom,
+    timeTickLen,
+    labelGap: CHART_TIME_LABEL_GAP,
+    font: HOUR_FONT,
+    ticks: timeTicks,
+    xMin,
+    xMax,
+    plotX0,
+    plotX1,
+  });
 
   strokeChartReferenceLine(ctx, prevClose, py, plotX0, plotX1);
 
