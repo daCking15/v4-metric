@@ -72,11 +72,8 @@ function applyPerformanceMode(on) {
 
   if (lastQuoteData) {
     const q = lastQuoteData;
-    const prev = q.previousClose;
-    const price = q.price;
-    const change =
-      Number.isFinite(price) && Number.isFinite(prev) ? price - prev : NaN;
-    scheduleSparkDraw(q.series, prev, change, q);
+    const { change } = quoteDayChange(q);
+    scheduleSparkDraw(q.series, change, q);
   }
 
   if (lastNewsItems) renderNews(lastNewsItems);
@@ -118,6 +115,36 @@ const CHART_LABEL_ROW_STEP = 32;
 const CHART_LABEL_PAD_LEFT = 8;
 /** Equal gap above/below label ink where guides are hidden. */
 const CHART_LABEL_MASK_PAD_Y = 5;
+/** Top band for OPEN / HIGH / LOW labels (above the plot). */
+const CHART_EVENT_BAND_H = 40;
+/** Gap between the plot top edge and the bottom of the event labels. */
+const CHART_LABEL_GAP_ABOVE_PLOT = 4;
+/** Horizontal inset so edge markers (OPEN ring, end dot) are not clipped. */
+const CHART_PLOT_INSET_X = 12;
+/** Minimum width of the horizontal tick on event guide lines. */
+const CHART_GUIDE_CAP_W = 7;
+/** Gap between the horizontal tick end and the label text. */
+const CHART_GUIDE_CAP_TEXT_GAP = 10;
+/** Bottom band for hour tick marks + labels under the plot. */
+const CHART_TIME_AXIS_H = 48;
+const CHART_TIME_TICK_LEN = 14;
+const CHART_TIME_LABEL_GAP = 12;
+
+function chartPlotLayout(h, { lite = false } = {}) {
+  const eventBandH = lite ? 36 : CHART_EVENT_BAND_H;
+  const chartTop = eventBandH;
+  const plotH = Math.max(40, h - eventBandH - CHART_TIME_AXIS_H);
+  const chartBottom = chartTop + plotH;
+  return {
+    chartTop,
+    plotH,
+    chartBottom,
+    // Bottom edge of row-0 label ink (labels sit just above the plot).
+    labelBaseY: chartTop - CHART_LABEL_GAP_ABOVE_PLOT,
+    timeTickLen: CHART_TIME_TICK_LEN,
+    hourLblY: chartBottom + CHART_TIME_TICK_LEN + CHART_TIME_LABEL_GAP,
+  };
+}
 
 function measureLabelInk(ctx, text) {
   const prev = ctx.textBaseline;
@@ -204,6 +231,158 @@ function chartYOnPlottedSeries(pts, t, py) {
   return py(pts[0].c);
 }
 
+const CHART_LINE_GREEN = "#2ee07a";
+const CHART_LINE_RED = "#ff5470";
+const CHART_FILL_GREEN = "rgba(46,224,122,0.22)";
+const CHART_FILL_RED = "rgba(255,84,112,0.22)";
+const CHART_GLOW_GREEN = "rgba(46,224,122,0.5)";
+const CHART_GLOW_RED = "rgba(255,84,112,0.5)";
+
+/** Walk the series in runs above/below `openPrice`, calling `onRun(run, aboveOpen)`. */
+function forEachOpenColoredRun(pts, openPrice, onRun) {
+  if (!pts.length) return;
+  if (!Number.isFinite(openPrice)) {
+    onRun(pts, pts[pts.length - 1].c >= pts[0].c);
+    return;
+  }
+  let run = [{ t: pts[0].t, c: pts[0].c }];
+  let above = pts[0].c >= openPrice;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i];
+    const b = pts[i + 1];
+    const bAbove = b.c >= openPrice;
+    if ((a.c >= openPrice) === bAbove) {
+      run.push(b);
+      continue;
+    }
+    const denom = b.c - a.c;
+    const u = denom !== 0 ? (openPrice - a.c) / denom : 0.5;
+    const cross = { t: a.t + u * (b.t - a.t), c: openPrice };
+    run.push(cross);
+    onRun(run, above);
+    run = [cross, b];
+    above = bAbove;
+  }
+  if (run.length >= 2) onRun(run, above);
+}
+
+const CHART_FILL_VS_OPEN_KEY = "rop-screensaver:chartFillVsOpen";
+
+function loadChartFillVsOpen() {
+  try {
+    return localStorage.getItem(CHART_FILL_VS_OPEN_KEY) === "1";
+  } catch {
+    /* ignore */
+  }
+  return false;
+}
+
+function saveChartFillVsOpen(on) {
+  try {
+    localStorage.setItem(CHART_FILL_VS_OPEN_KEY, on ? "1" : "0");
+  } catch {
+    /* ignore */
+  }
+}
+
+let chartFillVsOpen = loadChartFillVsOpen();
+
+function applyChartFillVsOpen(on) {
+  chartFillVsOpen = !!on;
+  saveChartFillVsOpen(chartFillVsOpen);
+  if (lastQuoteData) {
+    const q = lastQuoteData;
+    const { change } = quoteDayChange(q);
+    scheduleSparkDraw(q.series, change, q);
+  }
+  if (diag.isDebugEnabled()) diag.refresh();
+}
+
+function fillPlottedSeriesVsOpen(ctx, pts, px, py, openPrice, chartH) {
+  if (!Number.isFinite(openPrice)) {
+    const up = pts[pts.length - 1].c >= pts[0].c;
+    ctx.fillStyle = up ? CHART_FILL_GREEN : CHART_FILL_RED;
+    ctx.beginPath();
+    ctx.moveTo(px(pts[0].t), chartH);
+    pts.forEach((p) => ctx.lineTo(px(p.t), py(p.c)));
+    ctx.lineTo(px(pts[pts.length - 1].t), chartH);
+    ctx.closePath();
+    ctx.fill();
+    return;
+  }
+  const openY = py(openPrice);
+  forEachOpenColoredRun(pts, openPrice, (run, above) => {
+    if (run.length < 2) return;
+    ctx.fillStyle = above ? CHART_FILL_GREEN : CHART_FILL_RED;
+    ctx.beginPath();
+    ctx.moveTo(px(run[0].t), openY);
+    run.forEach((p) => ctx.lineTo(px(p.t), py(p.c)));
+    const last = run[run.length - 1];
+    ctx.lineTo(px(last.t), openY);
+    ctx.closePath();
+    ctx.fill();
+  });
+}
+
+function strokePlottedSeriesVsOpen(ctx, pts, px, py, openPrice, { glow = false } = {}) {
+  forEachOpenColoredRun(pts, openPrice, (run, above) => {
+    if (run.length < 2) return;
+    ctx.strokeStyle = above ? CHART_LINE_GREEN : CHART_LINE_RED;
+    if (glow) {
+      ctx.shadowColor = above ? CHART_GLOW_GREEN : CHART_GLOW_RED;
+      ctx.shadowBlur = 18;
+    }
+    ctx.beginPath();
+    run.forEach((p, i) => {
+      const X = px(p.t);
+      const Y = py(p.c);
+      if (i === 0) ctx.moveTo(X, Y);
+      else ctx.lineTo(X, Y);
+    });
+    ctx.stroke();
+  });
+}
+
+function priceVsOpenColor(price, openPrice, fallbackUp) {
+  if (Number.isFinite(openPrice) && Number.isFinite(price)) {
+    return price >= openPrice ? CHART_LINE_GREEN : CHART_LINE_RED;
+  }
+  return fallbackUp ? CHART_LINE_GREEN : CHART_LINE_RED;
+}
+
+/** Area under the line: subtle day fade by default; optional green/red vs open. */
+function drawChartSeriesFill(ctx, pts, px, py, chartH, { up, gradient, openPrice }) {
+  if (pts.length < 2) return;
+  if (chartFillVsOpen && Number.isFinite(openPrice)) {
+    fillPlottedSeriesVsOpen(ctx, pts, px, py, openPrice, chartH);
+    return;
+  }
+  const fillTop = up ? "rgba(46,224,122,0.22)" : "rgba(255,84,112,0.22)";
+  const fillLite = up ? "rgba(46,224,122,0.18)" : "rgba(255,84,112,0.18)";
+  if (gradient) {
+    const grad = ctx.createLinearGradient(0, 0, 0, chartH);
+    grad.addColorStop(0, fillTop);
+    grad.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = grad;
+  } else {
+    ctx.fillStyle = fillLite;
+  }
+  ctx.beginPath();
+  ctx.moveTo(px(pts[0].t), chartH);
+  pts.forEach((p) => ctx.lineTo(px(p.t), py(p.c)));
+  ctx.lineTo(px(pts[pts.length - 1].t), chartH);
+  ctx.closePath();
+  ctx.fill();
+}
+
+/** Start the plotted line at market open so the OPEN ring aligns with 7:30 AM. */
+function chartSeriesWithOpenAnchor(pts, marketOpen, openPrice) {
+  if (!pts.length || !Number.isFinite(openPrice)) return pts;
+  const head = { t: marketOpen, c: openPrice };
+  if (pts[0].t <= marketOpen + 120_000) return [head, ...pts.slice(1)];
+  return [head, ...pts];
+}
+
 /**
  * Position OPEN/HIGH/LOW labels beside the guide (X + pad), stagger rows on
  * overlap, and compute how far each guide line extends (lower rows run longer).
@@ -212,8 +391,8 @@ function layoutChartEventLabels(ctx, events, options) {
   const {
     font,
     px,
-    clampX,
     baseY,
+    labelsAbove = true,
     rowStep = CHART_LABEL_ROW_STEP,
     overlapGap = 12,
     maxRows = 3,
@@ -228,14 +407,16 @@ function layoutChartEventLabels(ctx, events, options) {
   const placed = [...events]
     .sort((a, b) => px(a.t) - px(b.t))
     .map((ev) => {
-      const X = clampX(px(ev.t));
+      const guideX = px(ev.t);
       const { width: tw, inkAscent, inkHeight } = measureLabelInk(ctx, ev.label);
-      // Sit label just to the right of the guide (not flush on the line).
-      let labelX = X + labelPadLeft;
+      // Room for the horizontal tick + gap before the label text.
+      const padLeft =
+        labelsAbove ? labelPadLeft + CHART_GUIDE_CAP_TEXT_GAP : labelPadLeft;
+      let labelX = guideX + padLeft;
       if (labelX < minLabelX) labelX = minLabelX;
       return {
         ev,
-        X,
+        guideX,
         labelX,
         left: labelX,
         right: labelX + tw,
@@ -274,11 +455,16 @@ function layoutChartEventLabels(ctx, events, options) {
 
   for (const p of placed) {
     // lblY = top of painted glyphs (not em-box top — avoids extra gap above cap height).
-    p.lblY = baseY + p.row * rowStep;
+    if (labelsAbove) {
+      p.lblY = baseY - p.inkHeight - p.row * rowStep;
+    } else {
+      p.lblY = baseY + p.row * rowStep;
+    }
     p.drawY = p.lblY + p.inkAscent;
     p.maskTop = p.lblY - CHART_LABEL_MASK_PAD_Y;
     p.maskBottom = p.lblY + p.inkHeight + CHART_LABEL_MASK_PAD_Y;
-    p.lineEndY = p.lblY + p.inkHeight / 2;
+    // Above chart: guides run from bottom of label down to the marker.
+    p.lineEndY = labelsAbove ? p.maskBottom : p.lblY + p.inkHeight / 2;
   }
 
   ctx.restore();
@@ -289,12 +475,10 @@ function drawChartEventGuidesAndLabels(
   ctx,
   placed,
   py,
-  { plottedPts, ringRadius = 5, ringWidth = 2, glow = false },
+  { plottedPts, ringRadius = 5, ringWidth = 2, glow = false, labelsAbove = true },
 ) {
-  const markerY = (p) => {
-    if (p.ev.isOpen) return py(p.ev.price);
-    return chartYOnPlottedSeries(plottedPts, p.ev.t, py) ?? py(p.ev.price);
-  };
+  const markerY = (p) =>
+    chartYOnPlottedSeries(plottedPts, p.ev.t, py) ?? py(p.ev.price);
 
   ctx.setLineDash([3, 4]);
   ctx.lineWidth = 1;
@@ -302,8 +486,25 @@ function drawChartEventGuidesAndLabels(
     const Y = markerY(p);
     ctx.strokeStyle = p.ev.lineColor;
     ctx.beginPath();
-    strokeVerticalGuide(ctx, p.X, Y, p.lineEndY, placed, p);
+    if (labelsAbove) {
+      const yCenter = p.lblY + p.inkHeight / 2;
+      strokeVerticalGuide(ctx, p.guideX, yCenter, Y, placed, p);
+    } else {
+      const yTop = Y;
+      const yBottom = p.lineEndY;
+      strokeVerticalGuide(ctx, p.guideX, yTop, yBottom, placed, p);
+    }
     ctx.stroke();
+    if (labelsAbove) {
+      const yCenter = p.lblY + p.inkHeight / 2;
+      const capEndX = p.labelX - CHART_GUIDE_CAP_TEXT_GAP;
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(p.guideX, yCenter);
+      ctx.lineTo(capEndX, yCenter);
+      ctx.stroke();
+      ctx.setLineDash([3, 4]);
+    }
   }
   ctx.setLineDash([]);
 
@@ -317,7 +518,7 @@ function drawChartEventGuidesAndLabels(
     ctx.strokeStyle = p.ev.color;
     ctx.lineWidth = glow ? 2.2 : ringWidth;
     ctx.beginPath();
-    ctx.arc(p.X, Y, ringRadius, 0, Math.PI * 2);
+    ctx.arc(p.guideX, Y, ringRadius, 0, Math.PI * 2);
     ctx.stroke();
     ctx.restore();
   }
@@ -447,7 +648,7 @@ const diag = (() => {
       `Stock:   ${slots.quote}`,
       `Weather: ${slots.weather}`,
       `News:    ${slots.news}`,
-      `Build:   v27 · ${liteMode ? "lite" : "full"}${isDebugUrl() ? " · /debug" : ""} · API: ${API_BASE || "(same-origin)"}`,
+      `Build:   v42 · ${liteMode ? "lite" : "full"}${isDebugUrl() ? " · /debug" : ""} · API: ${API_BASE || "(same-origin)"}`,
     ];
     if (errors.length) {
       lines.push("");
@@ -505,11 +706,13 @@ function initSettings() {
   const panel = document.getElementById("settingsPanel");
   const debugToggle = document.getElementById("debugToggle");
   const liteToggle = document.getElementById("liteToggle");
+  const chartFillToggle = document.getElementById("chartFillToggle");
   const newsCountSelect = document.getElementById("newsCountSelect");
   if (!btn || !panel) return;
 
   if (debugToggle) debugToggle.checked = diag.isDebugEnabled();
   if (liteToggle) liteToggle.checked = liteMode;
+  if (chartFillToggle) chartFillToggle.checked = chartFillVsOpen;
   if (newsCountSelect) {
     newsCountSelect.value = String(newsTickerLimit);
     newsCountSelect.addEventListener("change", () => {
@@ -541,6 +744,12 @@ function initSettings() {
   if (liteToggle) {
     liteToggle.addEventListener("change", () => {
       applyPerformanceMode(liteToggle.checked);
+    });
+  }
+
+  if (chartFillToggle) {
+    chartFillToggle.addEventListener("change", () => {
+      applyChartFillVsOpen(chartFillToggle.checked);
     });
   }
 
@@ -581,7 +790,10 @@ const fmtMoney = (v) =>
   Number.isFinite(v)
     ? v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
     : "—";
-const fmtSigned = (v) => (v >= 0 ? "+" : "") + fmtMoney(v);
+const fmtSigned = (v) =>
+  Number.isFinite(v)
+    ? (v >= 0 ? "+" : "-") + "$" + fmtMoney(Math.abs(v))
+    : "—";
 const fmtPct = (v) =>
   Number.isFinite(v) ? `${v >= 0 ? "+" : ""}${v.toFixed(2)}%` : "—";
 
@@ -648,6 +860,23 @@ function renderMarketState() {
 // ---------- Stock ----------
 let lastPrice = null;
 
+/** Change vs today's open when available; otherwise vs previous close. */
+function quoteDayChange(q) {
+  const price = q?.price;
+  const open = q?.open;
+  const prevClose = q?.previousClose;
+  const ref = Number.isFinite(open) ? open : prevClose;
+  if (!Number.isFinite(price) || !Number.isFinite(ref)) {
+    return { change: NaN, changePct: NaN, ref: NaN };
+  }
+  const change = price - ref;
+  return {
+    change,
+    changePct: ref !== 0 ? (change / ref) * 100 : NaN,
+    ref,
+  };
+}
+
 async function fetchQuote() {
   try {
     diag.set("quote", "fetching…");
@@ -667,9 +896,7 @@ async function fetchQuote() {
 function renderQuote(q) {
   lastQuoteData = q;
   const price = q.price;
-  const prev = q.previousClose;
-  const change = Number.isFinite(price) && Number.isFinite(prev) ? price - prev : NaN;
-  const changePct = Number.isFinite(change) && prev ? (change / prev) * 100 : NaN;
+  const { change, changePct } = quoteDayChange(q);
 
   // Price + flash on movement
   els.price.textContent = "$" + fmtMoney(price);
@@ -698,16 +925,16 @@ function renderQuote(q) {
     els.changeArrow.textContent = "—";
   }
 
-  scheduleSparkDraw(q.series, prev, change, q);
+  scheduleSparkDraw(q.series, change, q);
 }
 
 let sparkDrawPending = 0;
-function scheduleSparkDraw(series, prev, change, quote) {
+function scheduleSparkDraw(series, change, quote) {
   if (sparkDrawPending) cancelAnimationFrame(sparkDrawPending);
   sparkDrawPending = requestAnimationFrame(() => {
     sparkDrawPending = 0;
-    if (liteMode) drawSparkLite(series, prev, change, quote);
-    else drawSpark(series, prev, change, quote);
+    if (liteMode) drawSparkLite(series, change, quote);
+    else drawSpark(series, change, quote);
   });
 }
 
@@ -740,9 +967,81 @@ function tradingDayBounds() {
   };
 }
 
+const DENVER_TZ = "America/Denver";
+
+/** Map a Denver local wall-clock time on the chart's NYSE day to UTC ms. */
+function msForDenverLocal(y, month, day, hour, minute = 0) {
+  const wantMin = hour * 60 + minute;
+  const dayFmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: DENVER_TZ,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  const base = Date.UTC(y, month - 1, day, 12, 0);
+  for (let delta = -16 * 3600_000; delta <= 16 * 3600_000; delta += 60_000) {
+    const ms = base + delta;
+    const p = Object.fromEntries(dayFmt.formatToParts(new Date(ms)).map((x) => [x.type, x.value]));
+    if (+p.year !== y || +p.month !== month || +p.day !== day) continue;
+    const gotMin = parseInt(p.hour, 10) * 60 + parseInt(p.minute, 10);
+    if (gotMin === wantMin) return ms;
+  }
+  return base;
+}
+
+function denverDateParts(ms) {
+  const p = Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: DENVER_TZ,
+      year: "numeric",
+      month: "numeric",
+      day: "numeric",
+    })
+      .formatToParts(new Date(ms))
+      .map((x) => [x.type, x.value]),
+  );
+  return { y: +p.year, mo: +p.month, d: +p.day };
+}
+
+/** Denver hour labels: market open (e.g. 7:30 AM) + each hour after until close. */
+function chartDenverHourTicks(marketOpen, marketClose) {
+  const { y, mo, d } = denverDateParts(marketOpen);
+  const hourFmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: DENVER_TZ,
+    hour: "numeric",
+    hour12: false,
+  });
+  const hourLabelFmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: DENVER_TZ,
+    hour: "numeric",
+    hour12: true,
+  });
+  const openTimeFmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: DENVER_TZ,
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
+  const openHour = parseInt(hourFmt.format(new Date(marketOpen)), 10);
+  const closeHour = parseInt(hourFmt.format(new Date(marketClose)), 10);
+
+  const ticks = [
+    { t: marketOpen, label: openTimeFmt.format(new Date(marketOpen)) },
+  ];
+  for (let h = openHour + 1; h <= closeHour; h++) {
+    const t = msForDenverLocal(y, mo, d, h, 0);
+    if (t > marketClose + 30 * 60_000) break;
+    ticks.push({ t, label: hourLabelFmt.format(new Date(t)) });
+  }
+  return ticks;
+}
+
 // Lightweight chart for Performance mode — same OPEN/HIGH/LOW markers + vertical
 // guide lines as the full chart, without shadows or expensive compositing.
-function drawSparkLite(series, prev, change, quote) {
+function drawSparkLite(series, change, quote) {
   const cvs = els.spark;
   if (!cvs) return;
   const ctx = cvs.getContext("2d");
@@ -756,9 +1055,9 @@ function drawSparkLite(series, prev, change, quote) {
   ctx.clearRect(0, 0, w, h);
 
   const EVENT_FONT = "600 16px 'Space Grotesk', system-ui, sans-serif";
-  const AXIS_H = 108;
-  const chartH = h - AXIS_H;
-  const labelBaseY = chartH + 14;
+  const { chartTop, plotH, chartBottom, labelBaseY, hourLblY } = chartPlotLayout(h, {
+    lite: true,
+  });
   const { open: openTime, close: closeTime } = tradingDayBounds();
   const xMin = openTime;
   const xMax = closeTime;
@@ -767,25 +1066,27 @@ function drawSparkLite(series, prev, change, quote) {
   let pts = (series || [])
     .filter((p) => Number.isFinite(p.c) && p.t >= openTime - 60_000 && p.t <= closeTime + 60_000)
     .sort((a, b) => a.t - b.t);
+  const openPriceEarly = Number.isFinite(quote?.open) ? quote.open : pts[0]?.c ?? null;
+  pts = chartSeriesWithOpenAnchor(pts, openTime, openPriceEarly);
   const ptsFull = pts;
   pts = downsampleSeries(pts, 72);
 
-  const openPrice = Number.isFinite(quote?.open) ? quote.open : pts[0]?.c ?? null;
+  const openPrice = openPriceEarly;
   if (pts.length === 0 && !Number.isFinite(openPrice)) return;
 
   const highPrice = Number.isFinite(quote?.dayHigh)
     ? quote.dayHigh
-    : pts.length
-      ? Math.max(...pts.map((p) => p.c))
+    : ptsFull.length
+      ? Math.max(...ptsFull.map((p) => p.c))
       : openPrice;
   const lowPrice = Number.isFinite(quote?.dayLow)
     ? quote.dayLow
-    : pts.length
-      ? Math.min(...pts.map((p) => p.c))
+    : ptsFull.length
+      ? Math.min(...ptsFull.map((p) => p.c))
       : openPrice;
-  const currentPrice = pts.at(-1)?.c ?? null;
+  const currentPrice = ptsFull.at(-1)?.c ?? null;
 
-  const refs = [openPrice, highPrice, lowPrice, ...pts.map((p) => p.c)].filter(Number.isFinite);
+  const refs = [openPrice, highPrice, lowPrice, ...ptsFull.map((p) => p.c)].filter(Number.isFinite);
   let yMin = Math.min(...refs);
   let yMax = Math.max(...refs);
   if (yMin === yMax) {
@@ -798,17 +1099,16 @@ function drawSparkLite(series, prev, change, quote) {
 
   const plotW = w - CHART_PAD * 2;
   const px = (t) => CHART_PAD + ((t - xMin) / Math.max(1, xMax - xMin)) * plotW;
-  const py = (c) => chartH - ((c - yMin) / Math.max(0.0001, yMax - yMin)) * chartH;
+  const py = (c) =>
+    chartBottom - ((c - yMin) / Math.max(0.0001, yMax - yMin)) * plotH;
   const clampX = (x) => Math.max(CHART_PAD, Math.min(w - CHART_PAD, x));
 
   const up = change >= 0;
-  const stroke = up ? "#2ee07a" : "#ff5470";
-  const fill1 = up ? "rgba(46,224,122,0.18)" : "rgba(255,84,112,0.18)";
 
   ctx.strokeStyle = "rgba(255,255,255,0.1)";
   ctx.beginPath();
-  ctx.moveTo(CHART_PAD, chartH);
-  ctx.lineTo(w - CHART_PAD, chartH);
+  ctx.moveTo(CHART_PAD, chartBottom);
+  ctx.lineTo(w - CHART_PAD, chartBottom);
   ctx.stroke();
 
   if (Number.isFinite(openPrice)) {
@@ -822,26 +1122,11 @@ function drawSparkLite(series, prev, change, quote) {
   }
 
   if (pts.length >= 2) {
-    ctx.fillStyle = fill1;
-    ctx.beginPath();
-    ctx.moveTo(px(pts[0].t), chartH);
-    pts.forEach((p) => ctx.lineTo(px(p.t), py(p.c)));
-    ctx.lineTo(px(pts[pts.length - 1].t), chartH);
-    ctx.closePath();
-    ctx.fill();
-
-    ctx.strokeStyle = stroke;
     ctx.lineWidth = 2;
     ctx.lineJoin = "round";
     ctx.lineCap = "round";
-    ctx.beginPath();
-    pts.forEach((p, i) => {
-      const X = px(p.t);
-      const Y = py(p.c);
-      if (i === 0) ctx.moveTo(X, Y);
-      else ctx.lineTo(X, Y);
-    });
-    ctx.stroke();
+    drawChartSeriesFill(ctx, pts, px, py, chartBottom, { up, gradient: false, openPrice });
+    strokePlottedSeriesVsOpen(ctx, pts, px, py, openPrice);
   }
 
   const events = buildChartEvents({
@@ -856,8 +1141,8 @@ function drawSparkLite(series, prev, change, quote) {
   const placed = layoutChartEventLabels(ctx, events, {
     font: EVENT_FONT,
     px,
-    clampX,
     baseY: labelBaseY,
+    labelsAbove: true,
     minLabelX: CHART_PAD,
     maxLabelRight: w - CHART_PAD,
   });
@@ -867,18 +1152,19 @@ function drawSparkLite(series, prev, change, quote) {
     plottedPts: pts,
     ringRadius: 5,
     ringWidth: 2,
+    labelsAbove: true,
   });
 
   if (pts.length) {
     const lp = pts[pts.length - 1];
-    ctx.fillStyle = stroke;
+    ctx.fillStyle = priceVsOpenColor(lp.c, openPrice, up);
     ctx.beginPath();
     ctx.arc(clampX(px(lp.t)), py(lp.c), 5, 0, Math.PI * 2);
     ctx.fill();
   }
 }
 
-function drawSpark(series, prev, change, quote) {
+function drawSpark(series, change, quote) {
   const cvs = els.spark;
   const ctx = cvs.getContext("2d");
   // Clamp DPR to 2 — on TVs that report 3+ this avoids gigantic bitmaps that
@@ -891,28 +1177,30 @@ function drawSpark(series, prev, change, quote) {
   ctx.scale(dpr, dpr);
   ctx.clearRect(0, 0, w, h);
 
-  // Reserve a strip at the bottom for the x-axis: tick marks, event labels
-  // on up to two staggered rows, and hour labels on a row below those.
-  // Sized for TV legibility.
+  // OPEN/HIGH/LOW above the plot; hour labels tight under the plot bottom.
   const EVENT_FONT = "600 18px 'Space Grotesk', system-ui, sans-serif";
   const HOUR_FONT = "500 15px 'Space Grotesk', system-ui, sans-serif";
-  const AXIS_H = 108;
-  const chartH = h - AXIS_H;
-  const labelBaseY = chartH + 14;
-  const HOUR_LBL_Y = chartH + 84;
+  const { chartTop, plotH, chartBottom, labelBaseY, hourLblY, timeTickLen } =
+    chartPlotLayout(h);
 
-  // X axis: regular trading session, 9:30 → 16:00 ET.
-  const { open: openTime, close: closeTime } = tradingDayBounds();
-  const xMin = openTime;
-  const xMax = closeTime;
+  // X axis: NYSE 9:30–16:00 ET (7:30 AM–2:00 PM Denver during DST).
+  const { open: marketOpen, close: marketClose } = tradingDayBounds();
+  const xMin = marketOpen;
+  const xMax = marketClose;
 
-  const pts = series
-    .filter((p) => Number.isFinite(p.c) && p.t >= openTime - 60_000 && p.t <= closeTime + 60_000)
+  let pts = series
+    .filter(
+      (p) =>
+        Number.isFinite(p.c) &&
+        p.t >= marketOpen - 60_000 &&
+        p.t <= marketClose + 60_000,
+    )
     .sort((a, b) => a.t - b.t);
 
   const openPrice = Number.isFinite(quote?.open)
     ? quote.open
     : pts[0]?.c ?? null;
+  pts = chartSeriesWithOpenAnchor(pts, marketOpen, openPrice);
   if (pts.length === 0 && !Number.isFinite(openPrice)) return;
 
   const ys = pts.map((p) => p.c);
@@ -939,51 +1227,46 @@ function drawSpark(series, prev, change, quote) {
   yMin -= yPad;
   yMax += yPad;
 
-  const px = (t) => ((t - xMin) / Math.max(1, xMax - xMin)) * w;
-  const py = (c) => chartH - ((c - yMin) / Math.max(0.0001, yMax - yMin)) * chartH;
+  const plotX0 = CHART_PLOT_INSET_X;
+  const plotX1 = w - CHART_PLOT_INSET_X;
+  const plotW = Math.max(1, plotX1 - plotX0);
+  const px = (t) => plotX0 + ((t - xMin) / Math.max(1, xMax - xMin)) * plotW;
+  const py = (c) =>
+    chartBottom - ((c - yMin) / Math.max(0.0001, yMax - yMin)) * plotH;
 
   const up = change >= 0;
-  const stroke = up ? "#2ee07a" : "#ff5470";
-  const glow = up ? "rgba(46,224,122,0.5)" : "rgba(255,84,112,0.5)";
-  const fill1 = up ? "rgba(46,224,122,0.22)" : "rgba(255,84,112,0.22)";
 
-  // ---- Hourly gridlines + axis ticks + hour labels (Mountain Time).
-  // NYSE regular session 9:30 AM – 4:00 PM ET = 7:30 AM – 2:00 PM MT.
-  const hourLabel = (hour) =>
-    hour === 12 ? "12 PM" : hour > 12 ? `${hour - 12} PM` : `${hour} AM`;
-
+  // ---- Hourly gridlines + axis ticks (Denver): open at 7:30 AM, then 8 AM … close.
   ctx.save();
   ctx.font = HOUR_FONT;
   ctx.textBaseline = "top";
-  for (let mtHour = 8; mtHour <= 14; mtHour++) {
-    // MT hour H corresponds to (H - 7.5) hours after the 7:30 AM MT open.
-    const t = openTime + (mtHour - 7.5) * 3600_000;
-    const X = px(t);
-    if (X < 0 || X > w) continue;
+  for (const tick of chartDenverHourTicks(marketOpen, marketClose)) {
+    const X = px(tick.t);
+    if (X < -8 || X > w + 8) continue;
     ctx.strokeStyle = "rgba(255,255,255,0.04)";
     ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.moveTo(X, 0);
-    ctx.lineTo(X, chartH);
+    ctx.moveTo(X, chartTop);
+    ctx.lineTo(X, chartBottom);
     ctx.stroke();
     ctx.strokeStyle = "rgba(255,255,255,0.18)";
     ctx.beginPath();
-    ctx.moveTo(X, chartH);
-    ctx.lineTo(X, chartH + 4);
+    ctx.moveTo(X, chartBottom);
+    ctx.lineTo(X, chartBottom + timeTickLen);
     ctx.stroke();
     let align = "center";
     if (X < 24) align = "left";
     else if (X > w - 24) align = "right";
     ctx.textAlign = align;
     ctx.fillStyle = "rgba(160, 180, 210, 0.55)";
-    ctx.fillText(hourLabel(mtHour), X, HOUR_LBL_Y);
+    ctx.fillText(tick.label, X, hourLblY);
   }
   // Axis baseline
   ctx.strokeStyle = "rgba(255,255,255,0.1)";
   ctx.lineWidth = 1;
   ctx.beginPath();
-  ctx.moveTo(0, chartH);
-  ctx.lineTo(w, chartH);
+  ctx.moveTo(plotX0, chartBottom);
+  ctx.lineTo(plotX1, chartBottom);
   ctx.stroke();
   ctx.restore();
 
@@ -995,67 +1278,40 @@ function drawSpark(series, prev, change, quote) {
     ctx.lineWidth = 1;
     const Y = py(openPrice);
     ctx.beginPath();
-    ctx.moveTo(0, Y);
-    ctx.lineTo(w, Y);
+    ctx.moveTo(plotX0, Y);
+    ctx.lineTo(plotX1, Y);
     ctx.stroke();
     ctx.restore();
   }
 
-  // ---- Filled area + glowing line
+  // ---- Filled area + glowing line (green above open, red below)
   if (pts.length >= 2) {
-    const grad = ctx.createLinearGradient(0, 0, 0, chartH);
-    grad.addColorStop(0, fill1);
-    grad.addColorStop(1, "rgba(0,0,0,0)");
-    ctx.fillStyle = grad;
-    ctx.beginPath();
-    ctx.moveTo(px(pts[0].t), chartH);
-    pts.forEach((p) => ctx.lineTo(px(p.t), py(p.c)));
-    ctx.lineTo(px(pts[pts.length - 1].t), chartH);
-    ctx.closePath();
-    ctx.fill();
-
     ctx.save();
-    ctx.shadowColor = glow;
-    ctx.shadowBlur = 18;
-    ctx.strokeStyle = stroke;
     ctx.lineWidth = 2.5;
     ctx.lineJoin = "round";
     ctx.lineCap = "round";
-    ctx.beginPath();
-    pts.forEach((p, i) => {
-      const X = px(p.t);
-      const Y = py(p.c);
-      if (i === 0) ctx.moveTo(X, Y);
-      else ctx.lineTo(X, Y);
-    });
-    ctx.stroke();
+    drawChartSeriesFill(ctx, pts, px, py, chartBottom, { up, gradient: true, openPrice });
+    strokePlottedSeriesVsOpen(ctx, pts, px, py, openPrice, { glow: true });
     ctx.restore();
   }
 
-  // ---- Event markers (open / high / low) — vertical guide + label in axis strip.
+  // ---- Event markers (open / high / low) — labels above, guides down to the line.
   const events = buildChartEvents({
     points: pts,
-    openTime,
+    openTime: marketOpen,
     openPrice,
     highPrice,
     lowPrice,
     currentPrice,
   });
 
-  // Clamp event X positions to a safe gutter so markers/rings never get cut
-  // off at the canvas edges.
-  const EDGE = 8;
-  function clampX(rawX) {
-    return Math.max(EDGE, Math.min(w - EDGE, rawX));
-  }
-
   const placed = layoutChartEventLabels(ctx, events, {
     font: EVENT_FONT,
     px,
-    clampX,
     baseY: labelBaseY,
-    minLabelX: EDGE + 2,
-    maxLabelRight: w - EDGE,
+    labelsAbove: true,
+    minLabelX: plotX0 + 2,
+    maxLabelRight: plotX1,
   });
 
   ctx.font = EVENT_FONT;
@@ -1064,14 +1320,18 @@ function drawSpark(series, prev, change, quote) {
     ringRadius: 6,
     ringWidth: 2.2,
     glow: true,
+    labelsAbove: true,
   });
 
   // ---- Current price end-dot
   if (pts.length) {
     const lp = pts[pts.length - 1];
+    const dotColor = priceVsOpenColor(lp.c, openPrice, up);
+    const dotGlow =
+      dotColor === CHART_LINE_GREEN ? CHART_GLOW_GREEN : CHART_GLOW_RED;
     ctx.save();
-    ctx.fillStyle = stroke;
-    ctx.shadowColor = glow;
+    ctx.fillStyle = dotColor;
+    ctx.shadowColor = dotGlow;
     ctx.shadowBlur = 28;
     ctx.beginPath();
     ctx.arc(px(lp.t), py(lp.c), 7, 0, Math.PI * 2);
